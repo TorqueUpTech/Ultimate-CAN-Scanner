@@ -1,0 +1,19 @@
+# .NET build output
+bin/
+obj/
+
+# Visual Studio / Rider / VS Code
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Vendor OBDX Pro docs (copyrighted — kept local, not published)
+OBDX-Pro-Developers-Reference-Manual.pdf
+OBDX Pro Wireless Connections.pdf
+
+# OS cruft
+Thumbs.db
+.DS_Store

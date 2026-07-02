@@ -1,0 +1,336 @@
+<Window x:Class="IxxatCanTool.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:sp="clr-namespace:ScottPlot.WPF;assembly=ScottPlot.WPF"
+        Title="Ixxat CAN Tool" Height="640" Width="1040"
+        WindowStartupLocation="CenterScreen">
+    <DockPanel Margin="8">
+
+        <!-- Connection bar -->
+        <Border DockPanel.Dock="Top" Padding="6" Margin="0,0,0,6"
+                Background="#F3F3F3" CornerRadius="4">
+            <WrapPanel VerticalAlignment="Center">
+                <TextBlock Text="Adapter:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <ComboBox x:Name="AdapterCombo" Width="96" Margin="0,0,12,0"
+                          ItemsSource="{Binding AdapterKinds}"
+                          SelectedItem="{Binding SelectedAdapterKind}"
+                          IsEnabled="{Binding IsDisconnected}"
+                          ToolTip="CAN backend: Ixxat VCI4 or OBDX Pro"/>
+
+                <TextBlock Text="Device:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <ComboBox x:Name="DeviceCombo" Width="300" Margin="0,0,8,0"
+                          ItemsSource="{Binding Devices}"
+                          SelectedItem="{Binding SelectedDevice}"/>
+                <Button Content="↻" Width="26" Margin="0,0,12,0" Click="OnRefresh"
+                        ToolTip="Re-scan for devices on the selected adapter"/>
+
+                <TextBlock Text="Bitrate:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <ComboBox x:Name="BitRateCombo" Width="110" Margin="0,0,12,0"
+                          ItemsSource="{Binding BitRates}"
+                          SelectedItem="{Binding SelectedBitRate}"/>
+
+                <CheckBox Content="Listen-only" VerticalAlignment="Center" Margin="0,0,12,0"
+                          IsChecked="{Binding ListenOnly}"
+                          IsEnabled="{Binding IsDisconnected}"/>
+
+                <Button Content="Connect" Width="84" Margin="0,0,6,0"
+                        Click="OnConnect" IsEnabled="{Binding IsDisconnected}"/>
+                <Button Content="Disconnect" Width="84"
+                        Click="OnDisconnect" IsEnabled="{Binding IsConnected}"/>
+            </WrapPanel>
+        </Border>
+
+        <!-- Transmit bar -->
+        <Border DockPanel.Dock="Top" Padding="6" Margin="0,0,0,6"
+                Background="#F3F3F3" CornerRadius="4">
+            <WrapPanel VerticalAlignment="Center">
+                <TextBlock Text="ID (hex):" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <TextBox x:Name="TxId" Width="100" Margin="0,0,8,0" Text="100"/>
+                <CheckBox x:Name="TxExtended" Content="29-bit" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <CheckBox x:Name="TxRemote" Content="RTR" VerticalAlignment="Center" Margin="0,0,12,0"/>
+
+                <TextBlock Text="Data (hex bytes):" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <TextBox x:Name="TxData" Width="240" Margin="0,0,8,0" Text="11 22 33 44"/>
+                <Button Content="Send" Width="70" Margin="0,0,12,0" Click="OnSend" IsEnabled="{Binding IsConnected}"/>
+
+                <TextBlock Text="every" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <TextBox x:Name="TxInterval" Width="56" Margin="0,0,4,0" Text="100"/>
+                <TextBlock Text="ms" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <Button x:Name="TxRepeatButton" Content="Repeat" Width="74"
+                        Click="OnRepeatRaw" IsEnabled="{Binding IsConnected}"/>
+            </WrapPanel>
+        </Border>
+
+        <!-- DBC transmit bar -->
+        <Border DockPanel.Dock="Top" Padding="6" Margin="0,0,0,6"
+                Background="#EEF4FF" CornerRadius="4">
+            <StackPanel>
+                <WrapPanel VerticalAlignment="Center">
+                    <TextBlock Text="DBC TX —" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <TextBlock Text="Message:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <ComboBox x:Name="DbcMsgCombo" Width="220" Margin="0,0,8,0"
+                              ItemsSource="{Binding DbcMessages}"
+                              SelectedItem="{Binding SelectedDbcMessage}"
+                              DisplayMemberPath="Display"/>
+                    <TextBlock Text="Signal:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <ComboBox x:Name="DbcSigCombo" Width="180" Margin="0,0,8,0"
+                              ItemsSource="{Binding DbcSignals}"
+                              SelectedItem="{Binding SelectedDbcSignal}"
+                              DisplayMemberPath="Display"/>
+                    <TextBlock Text="Value:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <TextBox x:Name="DbcValue" Width="80" Margin="0,0,8,0" Text="0"/>
+                    <Button Content="Send" Width="70" Margin="0,0,8,0"
+                            Click="OnSendSignal" IsEnabled="{Binding IsConnected}"/>
+                    <Button Content="Add to list ↓" Width="92" Margin="0,0,12,0"
+                            Click="OnAddTxEntry"
+                            ToolTip="Queue this signal for multi-signal transmit"/>
+
+                    <TextBlock Text="every" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <TextBox x:Name="DbcInterval" Width="56" Margin="0,0,4,0" Text="100"/>
+                    <TextBlock Text="ms" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <Button x:Name="DbcRepeatButton" Content="Repeat" Width="74"
+                            Click="OnRepeatSignal" IsEnabled="{Binding IsConnected}"/>
+                </WrapPanel>
+
+                <!-- Multi-signal TX list -->
+                <WrapPanel VerticalAlignment="Center" Margin="0,6,0,0">
+                    <TextBlock Text="TX LIST —" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <Button Content="Send All" Width="74" Margin="0,0,6,0"
+                            Click="OnSendTxList" IsEnabled="{Binding IsConnected}"
+                            ToolTip="Send every queued signal now (one frame per CAN ID)"/>
+                    <Button x:Name="TxListRepeatButton" Content="Repeat All" Width="84" Margin="0,0,6,0"
+                            Click="OnRepeatTxList" IsEnabled="{Binding IsConnected}"
+                            ToolTip="Cyclically transmit the whole list (one stream per CAN ID)"/>
+                    <Button Content="Clear list" Width="74" Margin="0,0,12,0" Click="OnClearTxList"/>
+                    <TextBlock VerticalAlignment="Center" Foreground="#555"
+                               Text="{Binding TxList.Count, StringFormat=' {0} queued'}"/>
+                </WrapPanel>
+
+                <ItemsControl ItemsSource="{Binding TxList}" Margin="0,4,0,0">
+                    <ItemsControl.Template>
+                        <ControlTemplate TargetType="ItemsControl">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="120">
+                                <ItemsPresenter/>
+                            </ScrollViewer>
+                        </ControlTemplate>
+                    </ItemsControl.Template>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Background="#FFFFFF" BorderBrush="#D0DAEE" BorderThickness="1"
+                                    CornerRadius="3" Padding="6,2" Margin="0,0,0,3">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="170"/>
+                                        <ColumnDefinition Width="190"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="90"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{Binding MessageText}"
+                                               VerticalAlignment="Center" FontWeight="SemiBold"/>
+                                    <TextBlock Grid.Column="1" Text="{Binding SignalText}"
+                                               VerticalAlignment="Center" Foreground="#444"/>
+                                    <TextBlock Grid.Column="2" Text="=" VerticalAlignment="Center" Margin="6,0"/>
+                                    <TextBox Grid.Column="3" Width="80" VerticalAlignment="Center"
+                                             Text="{Binding ValueText, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <Button Grid.Column="4" Content="✕" Width="24" Margin="8,0,0,0"
+                                            Click="OnRemoveTxEntry" Tag="{Binding}"
+                                            ToolTip="Remove from list"/>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+        </Border>
+
+        <!-- Log playback bar -->
+        <Border DockPanel.Dock="Top" Padding="6" Margin="0,0,0,6"
+                Background="#FFF6E9" CornerRadius="4">
+            <WrapPanel VerticalAlignment="Center">
+                <TextBlock Text="PLAYBACK —" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <Button Content="Open Log…" Width="92" Margin="0,0,8,0" Click="OnOpenLog"/>
+                <TextBlock Text="{Binding LogFileName}" VerticalAlignment="Center"
+                           Foreground="#555" Margin="0,0,12,0"/>
+
+                <TextBlock Text="Mode:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <ComboBox x:Name="PlayMode" Width="150" Margin="0,0,12,0" SelectedIndex="1">
+                    <ComboBoxItem Content="View (load all)"/>
+                    <ComboBoxItem Content="Replay → grid"/>
+                    <ComboBoxItem Content="Replay → bus"/>
+                    <ComboBoxItem Content="Replay → TCP"/>
+                </ComboBox>
+
+                <TextBlock Text="Speed:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <TextBox x:Name="PlaySpeed" Width="48" Margin="0,0,2,0" Text="1"
+                         ToolTip="Playback speed multiplier (0 = as fast as possible)"/>
+                <TextBlock Text="×" VerticalAlignment="Center" Margin="0,0,12,0"/>
+
+                <Button x:Name="PlayButton" Content="Play" Width="74" Margin="0,0,6,0"
+                        Click="OnPlay" IsEnabled="{Binding IsLogLoaded}"/>
+                <Button Content="Stop" Width="64" Margin="0,0,6,0" Click="OnStopPlay"/>
+                <ToggleButton x:Name="LoopButton" Content="Loop" Width="56" Margin="0,0,12,0"
+                              Click="OnToggleLoop"
+                              ToolTip="Repeat the replay from the start until Stop (paced modes; ignored by View)"/>
+                <ToggleButton x:Name="GraphToggle" Content="Graph" Width="64" Margin="0,0,12,0"
+                              Click="OnToggleGraph" IsEnabled="{Binding IsLogLoaded}"
+                              ToolTip="Show/hide a chart of decoded signals (needs a DBC loaded)"/>
+                <TextBlock Text="{Binding PlaybackProgress}" VerticalAlignment="Center" Foreground="#555" Margin="0,0,12,0"/>
+
+                <ToggleButton x:Name="TcpServerButton" Content="TCP Server" Width="84" Margin="0,0,8,0"
+                              Click="OnToggleTcpServer"
+                              ToolTip="Start/stop the 127.0.0.1:51729 RawCanWire server. Use Mode 'Replay → TCP' to broadcast a log to the dash sim."/>
+                <TextBlock Text="{Binding TcpStatus}" VerticalAlignment="Center" Foreground="#555"/>
+            </WrapPanel>
+        </Border>
+
+        <!-- Status bar -->
+        <Border DockPanel.Dock="Bottom" Padding="6,3" Margin="0,6,0,0"
+                Background="#222">
+            <TextBlock Text="{Binding Status}" Foreground="#EEE"/>
+        </Border>
+
+        <!-- Trace controls -->
+        <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0" VerticalAlignment="Center">
+            <Button Content="Clear" Width="84" Margin="0,0,6,0" Click="OnClear"/>
+            <Button x:Name="LogButton" Content="Start Log" Width="100" Margin="0,0,16,0" Click="OnToggleLog"/>
+
+            <CheckBox Content="Auto-scroll" VerticalAlignment="Center" Margin="0,0,16,0"
+                      IsChecked="{Binding AutoScroll}"/>
+
+            <Button Content="Load DBC…" Width="100" Margin="0,0,6,0" Click="OnLoadDbc"/>
+            <Button Content="Clear DBC" Width="84" Margin="0,0,8,0" Click="OnClearDbc"/>
+            <TextBlock Text="{Binding DbcFileName}" VerticalAlignment="Center" Foreground="#555"/>
+        </WrapPanel>
+
+        <!-- Main content: live trace + graph, plus a live gauge dashboard -->
+        <TabControl>
+        <TabItem Header="Trace">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition x:Name="GraphRow" Height="0"/>
+            </Grid.RowDefinitions>
+
+            <DataGrid x:Name="TraceGrid" Grid.Row="0"
+                      ItemsSource="{Binding Frames}" AutoGenerateColumns="False"
+                      IsReadOnly="True" GridLinesVisibility="Horizontal"
+                      HeadersVisibility="Column" FontFamily="Consolas"
+                      EnableRowVirtualization="True">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Time (s)" Binding="{Binding Time}" Width="80"/>
+                    <DataGridTextColumn Header="Dir" Binding="{Binding Direction}" Width="44"/>
+                    <DataGridTextColumn Header="ID" Binding="{Binding Id}" Width="90"/>
+                    <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="56"/>
+                    <DataGridTextColumn Header="DLC" Binding="{Binding Dlc}" Width="44"/>
+                    <DataGridTextColumn Header="Data" Binding="{Binding Data}" Width="220"/>
+                    <DataGridTextColumn Header="Decode (DBC / J1939)" Binding="{Binding Decode}" Width="*"/>
+                </DataGrid.Columns>
+            </DataGrid>
+
+            <GridSplitter x:Name="GraphSplitter" Grid.Row="1" Height="5"
+                          HorizontalAlignment="Stretch" VerticalAlignment="Center"
+                          Background="#CCC" Visibility="Collapsed"/>
+
+            <Grid x:Name="GraphPanel" Grid.Row="2" Visibility="Collapsed" Margin="0,4,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="210"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <DockPanel Grid.Column="0" Margin="0,0,4,0">
+                    <TextBlock DockPanel.Dock="Top" Text="Signals" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                    <WrapPanel DockPanel.Dock="Bottom" Margin="0,4,0,0">
+                        <Button Content="All" Width="48" Margin="0,0,4,0" Click="OnPlotAll"/>
+                        <Button Content="None" Width="48" Click="OnPlotNone"/>
+                    </WrapPanel>
+                    <ListBox x:Name="SignalList" ItemsSource="{Binding PlotSignals}"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <CheckBox Content="{Binding Label}" IsChecked="{Binding IsSelected}"
+                                          Click="OnPlotSignalToggled"/>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </DockPanel>
+
+                <sp:WpfPlot x:Name="GraphPlot" Grid.Column="1"/>
+            </Grid>
+        </Grid>
+        </TabItem>
+
+        <TabItem Header="Live Gauges">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="230"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <DockPanel Grid.Column="0" Margin="0,4,4,0">
+                    <TextBlock DockPanel.Dock="Top" Text="CAN IDs (from DBC)"
+                               FontWeight="SemiBold" Margin="2,0,0,2"/>
+                    <TextBlock DockPanel.Dock="Top" Text="Tick an ID to watch its signals live."
+                               Foreground="#888" FontSize="11" TextWrapping="Wrap" Margin="2,0,0,6"/>
+                    <WrapPanel DockPanel.Dock="Bottom" Margin="2,4,0,0">
+                        <Button Content="All" Width="48" Margin="0,0,4,0" Click="OnGaugeAll"/>
+                        <Button Content="None" Width="48" Click="OnGaugeNone"/>
+                    </WrapPanel>
+                    <ListBox x:Name="CanIdList" ItemsSource="{Binding CanIdGroups}"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <CheckBox IsChecked="{Binding IsEnabled, Mode=TwoWay}" Margin="0,2,0,2">
+                                    <StackPanel Margin="2,0,0,0">
+                                        <TextBlock Text="{Binding IdText}" FontFamily="Consolas"/>
+                                        <TextBlock Text="{Binding Name}" Foreground="#777" FontSize="11"/>
+                                    </StackPanel>
+                                </CheckBox>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </DockPanel>
+
+                <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                    <ItemsControl ItemsSource="{Binding Gauges}" Margin="4">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Width="200" Margin="4" Padding="8" Background="#FAFAFA"
+                                        BorderBrush="#DDDDDD" BorderThickness="1" CornerRadius="4">
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding SignalName}" FontWeight="SemiBold"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Text="{Binding MessageName}" Foreground="#888888"
+                                                   FontSize="11" Margin="0,0,0,4"/>
+                                        <DockPanel LastChildFill="True">
+                                            <TextBlock Text="{Binding Unit}" DockPanel.Dock="Right"
+                                                       VerticalAlignment="Bottom" Foreground="#666666"
+                                                       Margin="4,0,0,3"/>
+                                            <TextBlock Text="{Binding ValueText}" FontSize="24"
+                                                       FontWeight="Bold" Foreground="#1565C0"/>
+                                        </DockPanel>
+                                        <ProgressBar Minimum="0" Maximum="1"
+                                                     Value="{Binding Fraction, Mode=OneWay}"
+                                                     Height="8" Margin="0,4,0,2"
+                                                     Foreground="#1565C0" Background="#E0E0E0"/>
+                                        <DockPanel>
+                                            <TextBlock Text="{Binding MinText}" Foreground="#999999" FontSize="10"/>
+                                            <TextBlock Text="{Binding MaxText}" Foreground="#999999" FontSize="10"
+                                                       HorizontalAlignment="Right" DockPanel.Dock="Right"/>
+                                        </DockPanel>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </Grid>
+        </TabItem>
+        </TabControl>
+    </DockPanel>
+</Window>

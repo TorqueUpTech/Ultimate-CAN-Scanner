@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- Windows SDK TFM so the OBDX BLE transport can use the WinRT Bluetooth APIs. -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- VCI driver DLLs are 64-bit; pin the process to x64 so interop loads. -->
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AssemblyName>IxxatCanTool</AssemblyName>
+    <RootNamespace>IxxatCanTool</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- HMS Networks managed VCI4 .NET API. Wraps the locally-installed
+         native VCI driver (C:\Program Files\HMS\Ixxat VCI). -->
+    <PackageReference Include="DbcParserLib" Version="1.8.0" />
+    <PackageReference Include="Ixxat.Vci4" Version="4.1.4" />
+    <PackageReference Include="ScottPlot.WPF" Version="5.0.55" />
+    <!-- OBDX Pro USB virtual-COM transport. -->
+    <PackageReference Include="System.IO.Ports" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>
