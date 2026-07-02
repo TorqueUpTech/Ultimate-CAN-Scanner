@@ -1,4 +1,4 @@
-# Ixxat CAN Tool
+# Ixxat & OBDX CAN Tool
 
 A Windows WPF (.NET 8) CAN-bus tool. Two adapter backends are selectable at runtime
 (**Adapter** picker on the connection bar): the **Ixxat VCI4 .NET API** for HMS Ixxat
