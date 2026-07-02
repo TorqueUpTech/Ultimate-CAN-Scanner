@@ -36,7 +36,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 {
     private const int MaxRows = 5000;
     private const int MaxRowsPerFlush = 2000;
-    private const uint IdMask = 0x1FFFFFFF;
+    private const uint IdMask = CanFrame.IdentifierMask;
 
     private ICanAdapter _bus;
     private CanAdapterKind _busKind = CanAdapterKind.IxxatVci;
@@ -54,6 +54,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private CanBitRate _selectedBitRate = CanBitRate.Br500kBit;
     private bool _listenOnly;
     private bool _isConnected;
+    private bool _isBusy;
     private bool _autoScroll = true;
     private bool _isRepeating;
     private string _status = "Idle";
@@ -75,6 +76,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly ManualResetEventSlim _pauseGate = new(true);
     private Task _playTask = Task.CompletedTask;
     private volatile bool _loopPlayback;
+    // Progress is written from the playback worker and published by the flush tick, so a
+    // fast/unpaced replay doesn't post one dispatcher marshal per frame (input starvation).
+    private volatile int _playbackDone;
+    private int _playbackTotal;
 
     // ---- Live gauges ----
     // Latest frame seen per CAN ID (written on the RX/playback path, read on the
@@ -156,11 +161,28 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         private set
         {
             if (Set(ref _isConnected, value))
+            {
                 OnPropertyChanged(nameof(IsDisconnected));
+                OnPropertyChanged(nameof(CanConnect));
+            }
         }
     }
 
     public bool IsDisconnected => !IsConnected;
+
+    /// <summary>True while an adapter connect is in flight (a BLE scan/serial open can take seconds).</summary>
+    public bool IsBusy
+    {
+        get => _isBusy;
+        private set
+        {
+            if (Set(ref _isBusy, value))
+                OnPropertyChanged(nameof(CanConnect));
+        }
+    }
+
+    /// <summary>Connect is offered only when disconnected and not already connecting.</summary>
+    public bool CanConnect => IsDisconnected && !IsBusy;
 
     public bool IsLogging => _logger.IsLogging;
 
@@ -330,24 +352,40 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    public void Connect()
+    /// <summary>
+    /// Open the selected device off the UI thread. The blocking adapter open (VCI enumerate,
+    /// serial/TCP open, or a multi-second BLE scan) runs on the thread pool so the window stays
+    /// responsive; state and status are updated back on the UI thread when it completes.
+    /// </summary>
+    public async Task ConnectAsync()
     {
         if (SelectedDevice is null)
         {
             Status = "Select a device first.";
             return;
         }
+        if (IsBusy || IsConnected)
+            return;
 
+        var device = SelectedDevice;
+        var bitRate = SelectedBitRate;
+        bool listenOnly = ListenOnly;
         try
         {
-            EnsureBusKind();
-            _bus.Connect(SelectedDevice, SelectedBitRate, ListenOnly);
+            EnsureBusKind(); // swap backend on the UI thread — it rewires events
+            IsBusy = true;
+            Status = $"Connecting to {device.Description}…";
+            await Task.Run(() => _bus.Connect(device, bitRate, listenOnly));
             IsConnected = true;
-            Status = $"Connected @ {SelectedBitRate}{(ListenOnly ? " (listen-only)" : "")}.";
+            Status = $"Connected @ {bitRate}{(listenOnly ? " (listen-only)" : "")}.";
         }
         catch (Exception ex)
         {
             Status = "Connect failed: " + ex.Message;
+        }
+        finally
+        {
+            IsBusy = false;
         }
     }
 
@@ -711,6 +749,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         var frames = _logFrames;
         PlaybackTime = frames[0].TimeStamp;
+        _playbackDone = 0;
+        _playbackTotal = frames.Count;
         var cts = new CancellationTokenSource();
         _playCts = cts;
         _pauseGate.Set();
@@ -767,8 +807,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     else
                         EnqueueForDisplay(frame);
 
-                    int done = i + 1;
-                    SetOnUi(() => PlaybackProgress = $"{done:N0} / {frames.Count:N0}");
+                    _playbackDone = i + 1; // published by the flush tick, not marshalled per frame
                 }
             }
             while (_loopPlayback && !ct.IsCancellationRequested);
@@ -872,7 +911,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private void EnqueueForDisplay(CanFrame frame)
     {
         _latestFrame[frame.Identifier & IdMask] = frame;
-        _pending.Enqueue(new CanFrameRow(frame, DecodeFrame(frame)));
+        // Pass the decoder, don't run it: the row decodes lazily only if it's rendered.
+        _pending.Enqueue(new CanFrameRow(frame, DecodeFrame));
     }
 
     /// <summary>Marshal an action onto the UI thread (playback runs on a worker).</summary>
@@ -882,8 +922,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         _logger.Log(frame);
         _latestFrame[frame.Identifier & IdMask] = frame;
-        // Log + decode happen on the RX thread; only buffer for the UI here.
-        _pending.Enqueue(new CanFrameRow(frame, DecodeFrame(frame)));
+        // Keep the RX thread cheap: log + buffer only. Decoding is deferred to the row,
+        // which decodes lazily on the UI thread only if the grid actually renders it.
+        _pending.Enqueue(new CanFrameRow(frame, DecodeFrame));
     }
 
     /// <summary>Drain buffered frames onto the UI collection (runs on the UI thread).</summary>
@@ -914,6 +955,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         TcpStatus = _tcp.Running
             ? $"TCP {_tcp.BindAddress}:{_tcp.Port} — {_tcp.ClientCount} client(s)"
             : "TCP: off";
+
+        // Publish playback progress at the flush cadence (Set() no-ops when unchanged).
+        if (PlaybackState != PlaybackState.Stopped)
+            PlaybackProgress = $"{_playbackDone:N0} / {_playbackTotal:N0}";
     }
 
     /// <summary>Rebuild the CAN-ID checklist from the loaded DBC (or clear it).</summary>

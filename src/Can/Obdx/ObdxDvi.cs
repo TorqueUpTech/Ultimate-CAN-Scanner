@@ -154,55 +154,74 @@ public readonly record struct DviMessage(byte Command, byte[] Data);
 /// </summary>
 public sealed class ObdxFrameParser
 {
-    private readonly List<byte> _buf = [];
+    // Unread bytes live in _buf[_head.._tail). Consuming advances _head (O(1)); the buffer
+    // is compacted (shifted to the front) only when it fills or fully drains — so sustained
+    // high-rate parsing stays O(1) amortised instead of the O(n) shift a List.RemoveRange costs.
+    private byte[] _buf = new byte[4096];
+    private int _head;
+    private int _tail;
+
+    private int Available => _tail - _head;
 
     public void Append(ReadOnlySpan<byte> bytes)
     {
-        foreach (byte b in bytes)
-            _buf.Add(b);
+        EnsureRoom(bytes.Length);
+        bytes.CopyTo(_buf.AsSpan(_tail));
+        _tail += bytes.Length;
     }
 
     /// <summary>True if a complete, checksum-valid message was dequeued into <paramref name="msg"/>.</summary>
     public bool TryRead(out DviMessage msg)
     {
         msg = default;
-        while (_buf.Count >= 2)
+        while (Available >= 2)
         {
-            byte cmd = _buf[0];
+            byte cmd = _buf[_head];
             int lenSize = cmd is ObdxDvi.CmdReceiveLarge or 0x11 ? 2 : 1;
-            if (_buf.Count < 1 + lenSize)
-                return false; // need the length field
+            if (Available < 1 + lenSize)
+                break; // need the length field
 
             int dataLen = lenSize == 1
-                ? _buf[1]
-                : _buf[1] << 8 | _buf[2];
+                ? _buf[_head + 1]
+                : _buf[_head + 1] << 8 | _buf[_head + 2];
             int total = 1 + lenSize + dataLen + 1; // cmd + len field + data + checksum
-            if (_buf.Count < total)
-                return false; // wait for the rest of the frame
+            if (Available < total)
+                break; // wait for the rest of the frame
 
-            byte expected = ObdxDvi.Checksum(FirstBytes(total - 1));
-            if (_buf[total - 1] != expected)
+            byte expected = ObdxDvi.Checksum(_buf.AsSpan(_head, total - 1));
+            if (_buf[_head + total - 1] != expected)
             {
-                _buf.RemoveAt(0); // resync past the bad byte and try again
+                _head++; // resync past the bad byte and try again
                 continue;
             }
 
             var data = new byte[dataLen];
-            for (int i = 0; i < dataLen; i++)
-                data[i] = _buf[1 + lenSize + i];
-            _buf.RemoveRange(0, total);
+            Array.Copy(_buf, _head + 1 + lenSize, data, 0, dataLen);
+            _head += total;
             msg = new DviMessage(cmd, data);
             return true;
         }
+
+        if (_head == _tail)
+            _head = _tail = 0; // fully drained — reset cheaply
         return false;
     }
 
-    // Copy the frame's leading <paramref name="count"/> bytes out for the checksum pass.
-    private byte[] FirstBytes(int count)
+    private void EnsureRoom(int extra)
     {
-        var head = new byte[count];
-        for (int i = 0; i < count; i++)
-            head[i] = _buf[i];
-        return head;
+        if (_tail + extra <= _buf.Length)
+            return;
+
+        // Reclaim consumed space first; only grow if the live window still won't fit.
+        if (_head > 0)
+        {
+            int live = Available;
+            if (live > 0)
+                Array.Copy(_buf, _head, _buf, 0, live);
+            _head = 0;
+            _tail = live;
+        }
+        if (_tail + extra > _buf.Length)
+            Array.Resize(ref _buf, Math.Max(_buf.Length * 2, _tail + extra));
     }
 }

@@ -109,7 +109,7 @@ public partial class MainWindow : Window
 
     private void OnRefresh(object sender, RoutedEventArgs e) => _vm.RefreshDevices();
 
-    private void OnConnect(object sender, RoutedEventArgs e) => _vm.Connect();
+    private async void OnConnect(object sender, RoutedEventArgs e) => await _vm.ConnectAsync();
 
     private void OnDisconnect(object sender, RoutedEventArgs e) => _vm.Disconnect();
 

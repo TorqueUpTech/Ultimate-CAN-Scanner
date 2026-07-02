@@ -1,12 +1,13 @@
 using DbcParserLib;
 using DbcParserLib.Model;
+using IxxatCanTool.Can;
 
 namespace IxxatCanTool.Decoding;
 
 /// <summary>UI-facing wrapper over a DBC message. Hides the DbcParserLib types.</summary>
 public sealed class DbcMessageInfo
 {
-    private const uint IdMask = 0x1FFFFFFF;
+    private const uint IdMask = CanFrame.IdentifierMask;
 
     internal Message Message { get; }
 

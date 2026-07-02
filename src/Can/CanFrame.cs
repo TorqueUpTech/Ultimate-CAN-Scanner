@@ -13,6 +13,9 @@ public enum CanDirection
 /// </summary>
 public sealed class CanFrame
 {
+    /// <summary>29-bit mask for the arbitration ID (strips any driver flag bits).</summary>
+    public const uint IdentifierMask = 0x1FFFFFFF;
+
     /// <summary>Seconds since the channel was activated (VCI hardware timestamp).</summary>
     public double TimeStamp { get; init; }
 

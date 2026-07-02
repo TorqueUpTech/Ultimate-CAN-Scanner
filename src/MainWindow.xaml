@@ -14,7 +14,7 @@
                 <ComboBox x:Name="AdapterCombo" Width="96" Margin="0,0,12,0"
                           ItemsSource="{Binding AdapterKinds}"
                           SelectedItem="{Binding SelectedAdapterKind}"
-                          IsEnabled="{Binding IsDisconnected}"
+                          IsEnabled="{Binding CanConnect}"
                           ToolTip="CAN backend: Ixxat VCI4 or OBDX Pro"/>
 
                 <TextBlock Text="Device:" VerticalAlignment="Center" Margin="0,0,4,0"/>
@@ -34,7 +34,7 @@
                           IsEnabled="{Binding IsDisconnected}"/>
 
                 <Button Content="Connect" Width="84" Margin="0,0,6,0"
-                        Click="OnConnect" IsEnabled="{Binding IsDisconnected}"/>
+                        Click="OnConnect" IsEnabled="{Binding CanConnect}"/>
                 <Button Content="Disconnect" Width="84"
                         Click="OnDisconnect" IsEnabled="{Binding IsConnected}"/>
             </WrapPanel>

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.IO.Ports;
 
 namespace IxxatCanTool.Can.Obdx;
@@ -64,13 +65,21 @@ public sealed class ObdxCanAdapter : ICanAdapter
         {
             _transport.Open();
             Handshake();
-            foreach (byte[] cmd in ObdxDvi.RawCanInit(baudCode, listenOnly))
-                WriteRaw(cmd);
+
+            // Send the config commands first (protocol, baud, filters, raw-mode flags), then
+            // confirm the tool didn't reject any before comms are enabled. The final command is
+            // the comms-enable, held back until the RX pump is running so no frame is missed.
+            var seq = ObdxDvi.RawCanInit(baudCode, listenOnly);
+            for (int i = 0; i < seq.Count - 1; i++)
+                WriteRaw(seq[i]);
+            VerifyInit(expectedAcks: seq.Count - 1, timeoutMs: 500);
 
             _clock.Restart();
             _running = true;
             _rxThread = new Thread(ReceiveLoop) { IsBackground = true, Name = "Obdx-Rx" };
             _rxThread.Start();
+
+            WriteRaw(seq[^1]); // enable comms — frames now flow to the RX pump
             IsConnected = true;
         }
         catch
@@ -110,6 +119,36 @@ public sealed class ObdxCanAdapter : ICanAdapter
         }
 
         throw new ArgumentException($"Unsupported OBDX device key '{key}'.");
+    }
+
+    /// <summary>
+    /// Drain the tool's config-command acks after init. Returns once <paramref name="expectedAcks"/>
+    /// responses have arrived or the timeout elapses; throws if the tool reports an error frame, so a
+    /// rejected protocol/baud/filter fails Connect loudly instead of silently reading nothing. (If the
+    /// tool has config responses disabled, no acks arrive and it simply waits out the timeout.)
+    /// </summary>
+    private void VerifyInit(int expectedAcks, int timeoutMs)
+    {
+        var parser = new ObdxFrameParser();
+        var buf = new byte[512];
+        int acks = 0;
+        var sw = Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < timeoutMs && acks < expectedAcks)
+        {
+            int n = _transport!.Read(buf);
+            if (n <= 0)
+                continue;
+            parser.Append(buf.AsSpan(0, n));
+            while (parser.TryRead(out DviMessage msg))
+            {
+                if (msg.Command == ObdxDvi.CmdError)
+                    throw new IOException(
+                        $"OBDX rejected init (error 0x{(msg.Data.Length >= 2 ? msg.Data[1] : 0):X2}).");
+                // 0x41 responds to 0x31 (set protocol/comms); 0x44 responds to 0x34 (CAN settings).
+                if (msg.Command is 0x41 or 0x44)
+                    acks++;
+            }
+        }
     }
 
     /// <summary>ELM→DVI: turn echo off, switch to the byte protocol, and drain the ASCII replies.</summary>

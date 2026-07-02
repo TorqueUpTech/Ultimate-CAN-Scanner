@@ -14,7 +14,7 @@ public readonly record struct DecodedSignal(string Message, string Signal, strin
 /// </summary>
 public sealed class DbcDecoder
 {
-    private const uint IdMask = 0x1FFFFFFF;
+    private const uint IdMask = CanFrame.IdentifierMask;
 
     private readonly Dictionary<(uint Id, bool Extended), Message> _messages;
 
@@ -47,17 +47,23 @@ public sealed class DbcDecoder
         return new DbcDecoder(path, map, list);
     }
 
+    /// <summary>
+    /// Look up the DBC message for a frame. Some DBCs don't set the extended flag
+    /// consistently, so the opposite framing is tried before giving up.
+    /// </summary>
+    private Message? Match(CanFrame frame)
+    {
+        uint id = frame.Identifier & IdMask;
+        if (_messages.TryGetValue((id, frame.IsExtended), out var msg))
+            return msg;
+        return _messages.TryGetValue((id, !frame.IsExtended), out msg) ? msg : null;
+    }
+
     /// <summary>Returns a "MsgName: sig=val unit, …" string, or null if no match.</summary>
     public string? Decode(CanFrame frame)
     {
-        var key = (frame.Identifier & IdMask, frame.IsExtended);
-        if (!_messages.TryGetValue(key, out var msg))
-        {
-            // Some DBCs don't set the extended flag consistently; try the
-            // opposite framing before giving up.
-            if (!_messages.TryGetValue((frame.Identifier & IdMask, !frame.IsExtended), out msg))
-                return null;
-        }
+        if (Match(frame) is not { } msg)
+            return null;
 
         byte[] data = frame.Data;
         int? muxValue = TryGetMultiplexorValue(msg, data);
@@ -87,9 +93,7 @@ public sealed class DbcDecoder
     /// </summary>
     public IReadOnlyList<DecodedSignal> DecodeSignals(CanFrame frame)
     {
-        var key = (frame.Identifier & IdMask, frame.IsExtended);
-        if (!_messages.TryGetValue(key, out var msg)
-            && !_messages.TryGetValue((frame.Identifier & IdMask, !frame.IsExtended), out msg))
+        if (Match(frame) is not { } msg)
             return [];
 
         byte[] data = frame.Data;
