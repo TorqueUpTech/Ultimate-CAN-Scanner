@@ -12,8 +12,13 @@
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <AssemblyName>IxxatCanTool</AssemblyName>
+    <!-- Executable / output name. The RootNamespace stays IxxatCanTool: it is a code
+         identifier used throughout the source, not the user-facing product name. -->
+    <AssemblyName>UltimateCanScanner</AssemblyName>
     <RootNamespace>IxxatCanTool</RootNamespace>
+    <!-- Display name (window title / exe file properties). -->
+    <Product>Ultimate CAN Scanner</Product>
+    <AssemblyTitle>Ultimate CAN Scanner</AssemblyTitle>
   </PropertyGroup>
 
   <ItemGroup>

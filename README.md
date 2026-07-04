@@ -1,6 +1,7 @@
-# Ixxat, OBDX & J2534 CAN Tool
+# Ultimate CAN Scanner
 
-A Windows WPF (.NET 8) CAN-bus tool. Three adapter backends are selectable at runtime
+A Windows WPF (.NET 8) CAN-bus tool with Ixxat, OBDX and J2534 backends. Three adapter
+backends are selectable at runtime
 (**Adapter** picker on the connection bar): the **Ixxat VCI4 .NET API** for HMS Ixxat
 USB-to-CAN V2 adapters, the **OBDX Pro** scantool over its DVI protocol, and any
 **SAE J2534** PassThru device via its installed vendor DLL.
