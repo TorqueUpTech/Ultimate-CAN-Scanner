@@ -1,3 +1,4 @@
+using IxxatCanTool.Can.J2534;
 using IxxatCanTool.Can.Obdx;
 
 namespace IxxatCanTool.Can;
@@ -13,6 +14,7 @@ public static class CanAdapters
     {
         CanAdapterKind.IxxatVci => CanBusService.EnumerateDevices(),
         CanAdapterKind.Obdx => ObdxCanAdapter.EnumerateDevices(),
+        CanAdapterKind.J2534 => J2534CanAdapter.EnumerateDevices(),
         _ => []
     };
 
@@ -21,6 +23,7 @@ public static class CanAdapters
     {
         CanAdapterKind.IxxatVci => new CanBusService(),
         CanAdapterKind.Obdx => new ObdxCanAdapter(),
+        CanAdapterKind.J2534 => new J2534CanAdapter(),
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown adapter kind.")
     };
 }

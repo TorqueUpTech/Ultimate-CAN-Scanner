@@ -1,13 +1,15 @@
-# Ixxat & OBDX CAN Tool
+# Ixxat, OBDX & J2534 CAN Tool
 
-A Windows WPF (.NET 8) CAN-bus tool. Two adapter backends are selectable at runtime
+A Windows WPF (.NET 8) CAN-bus tool. Three adapter backends are selectable at runtime
 (**Adapter** picker on the connection bar): the **Ixxat VCI4 .NET API** for HMS Ixxat
-USB-to-CAN V2 adapters, and the **OBDX Pro** scantool over its DVI protocol.
+USB-to-CAN V2 adapters, the **OBDX Pro** scantool over its DVI protocol, and any
+**SAE J2534** PassThru device via its installed vendor DLL.
 
 ## Features
 
-- **Pluggable adapters** behind one `ICanAdapter` interface: Ixxat VCI4, or OBDX Pro
-  over USB virtual-COM, WiFi TCP, or BLE. Pick the backend, then the device.
+- **Pluggable adapters** behind one `ICanAdapter` interface: Ixxat VCI4, OBDX Pro
+  over USB virtual-COM / WiFi TCP / BLE, or a generic **J2534** PassThru tool. Pick the
+  backend, then the device.
 - Enumerate and connect to any installed VCI device (USB-to-CAN V2, etc.)
 - Selectable bit rate (10 kbit … 1 Mbit) and listen-only mode
 - Live receive trace with hardware timestamps (RX + self-received TX), with an **auto-scroll** toggle
@@ -58,6 +60,9 @@ dotnet run --project src\IxxatCanTool.csproj -c Release
 | `src/Can/Obdx/ObdxDvi.cs` | OBDX Pro DVI byte protocol: checksum, command builders, streaming frame parser (pure, tested). |
 | `src/Can/Obdx/ObdxCanAdapter.cs` | OBDX backend: ELM→DVI handshake, raw-CAN init, RX pump, TX, software-timer cyclic. |
 | `src/Can/Obdx/ObdxTransports.cs` | OBDX byte pipes: USB virtual-COM (`SerialPort`) and WiFi (`TcpClient`). |
+| `src/Can/J2534/J2534Native.cs` | SAE J2534 v04.04 constants, `PASSTHRU_MSG` layout, and the vendor-DLL loader (`J2534Library`). |
+| `src/Can/J2534/J2534Registry.cs` | Enumerate installed J2534 drivers from `HKLM\SOFTWARE\PassThruSupport.04.04` (64- and 32-bit views). |
+| `src/Can/J2534/J2534CanAdapter.cs` | J2534 backend: load DLL, raw-CAN connect, pass-all filters, RX pump, TX, software-timer cyclic. |
 | `src/Can/CanDeviceInfo.cs` | Adapter-agnostic device descriptor (`Adapter` + opaque `Key`). |
 | `src/Can/CanFrame.cs` | Driver-agnostic frame model. |
 | `src/Decoding/J1939Decoder.cs` | 29-bit ID → J1939 fields + known-PGN table. |
@@ -75,10 +80,26 @@ dotnet run --project src\IxxatCanTool.csproj -c Release
 ## Notes / next steps
 
 - **Adapters** are chosen at runtime via the connection-bar picker. `CanBusService`
-  (Ixxat VCI4) and `ObdxCanAdapter` (OBDX Pro) both implement `ICanAdapter`; the view
-  model holds one `ICanAdapter` and swaps it (`EnsureBusKind`) when the picker changes.
-  `CanDeviceInfo` carries an opaque `Key` per backend (VCI object id, or `serial:COM5` /
-  `tcp:host:port`).
+  (Ixxat VCI4), `ObdxCanAdapter` (OBDX Pro) and `J2534CanAdapter` (generic J2534) all
+  implement `ICanAdapter`; the view model holds one `ICanAdapter` and swaps it
+  (`EnsureBusKind`) when the picker changes. `CanDeviceInfo` carries an opaque `Key` per
+  backend (VCI object id, `serial:COM5` / `tcp:host:port`, or the J2534 driver DLL path).
+- **J2534 backend** (`src/Can/J2534/`) drives any SAE **J2534-1 (v04.04)** PassThru tool.
+  Drivers are discovered from the registry (`HKLM\SOFTWARE\PassThruSupport.04.04`) — each
+  device's `Name` and `FunctionLibrary` DLL path — and the chosen DLL is loaded by path at
+  runtime (`NativeLibrary` + delegate P/Invoke of `PassThruOpen/Connect/ReadMsgs/WriteMsgs/
+  StartMsgFilter/…`), so one build supports every installed tool with no per-vendor NuGet.
+  On connect it opens a raw **CAN** channel (protocol 5) at the selected bit rate and
+  installs pass-all filters for **both 11- and 29-bit** IDs (J2534 blocks all RX until a
+  filter is set). RX runs on a background thread that reads a batch of `PASSTHRU_MSG`s from
+  one reused unmanaged buffer and pulls each frame's fields by offset (no full 4152-byte
+  struct copy per frame); the CAN ID is the first 4 payload bytes, big-endian. TX is
+  mirrored into the trace and cyclic TX uses a software timer over the `Send` path (so
+  repeats echo into the grid), matching OBDX — `SupportsScheduler = false`.
+  **Caveats:** this process is **x64**, so only 64-bit vendor drivers load — 32-bit-only
+  drivers are still *listed* (so you see the device) but marked unusable and raise a clear
+  error on connect. SAE J2534-1 has **no standard listen-only** CAN mode, so ticking
+  Listen-only connects in normal mode and reports that in the status bar (the tool will ACK).
 - **OBDX Pro backend** speaks the DVI byte protocol (`ObdxDvi`, verified against the
   manual's worked hex). On connect it does the ELM→DVI handshake (`ATE0`, `DXDP1`), then
   puts the tool in **raw** mode for reverse-engineering: monitor-all (clear filters),
