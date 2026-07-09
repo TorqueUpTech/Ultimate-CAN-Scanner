@@ -36,6 +36,12 @@ public static class ObdxDvi
     public const byte CommsOn = 0x01;
     public const byte CommsListenOnly = 0x02;
 
+    // CAN filter type (0x34/0x00 "entire filter", byte XX). PASS is what a raw sniffer wants —
+    // FLOW makes the tool auto-emit flow-control frames onto the bus, which passive monitoring must not.
+    public const byte FilterPass = 0x00;
+    public const byte FilterFlow = 0x01;
+    public const byte FilterBlock = 0x02;
+
     /// <summary>The one ASCII command that switches the tool from ELM into DVI byte mode.</summary>
     public static byte[] EnterDviAscii() => Encoding.ASCII.GetBytes("DXDP1\r");
 
@@ -76,8 +82,35 @@ public static class ObdxDvi
     /// <summary>0x34/0x15 — predefined CAN baud (see <see cref="BaudCode"/>; 0x06 = 500 kbit/s).</summary>
     public static byte[] SetCanBaud(byte code) => Command(CmdCanSettings, 0x15, code);
 
-    /// <summary>0x34/0x24 — clear all CAN filters (with none set + comms On, the tool passes every frame).</summary>
+    /// <summary>0x34/0x24 — clear all CAN filters. On its own this leaves the tool passing NOTHING:
+    /// the OBDX only forwards frames matching an enabled PASS filter (manual Note 2), so a raw
+    /// monitor MUST follow this with <see cref="MonitorAllFilter"/>.</summary>
     public static byte[] ClearAllFilters() => Command(CmdCanSettings, 0x24);
+
+    /// <summary>
+    /// 0x34/0x00 — "entire filter": set a filter's ID, mask, type and status in one command
+    /// (per manual 3.14.1). <paramref name="extended"/> picks 11- vs 29-bit; a <paramref name="mask"/>
+    /// of 0 means "all bits ignored", i.e. every ID passes. Verified against the manual's worked example.
+    /// </summary>
+    public static byte[] SetEntireFilter(byte number, bool extended, byte type, bool enabled,
+                                         uint id, uint mask, uint flowId = 0)
+    {
+        var d = new byte[17];
+        d[0] = 0x00;                             // sub-command: entire filter
+        d[1] = number;                           // filter number
+        d[2] = (byte)(extended ? 0x01 : 0x00);   // frame type: 00 = 11-bit, 01 = 29-bit
+        d[3] = type;                             // 00 pass / 01 flow / 02 block
+        d[4] = (byte)(enabled ? 0x01 : 0x00);
+        WriteBe32(d.AsSpan(5), id);
+        WriteBe32(d.AsSpan(9), mask);
+        WriteBe32(d.AsSpan(13), flowId);
+        return Command(CmdCanSettings, d);
+    }
+
+    /// <summary>An enabled PASS filter with ID+mask 0 — matches every CAN ID of the given width,
+    /// turning the OBDX into a promiscuous sniffer (the equivalent of the Ixxat "receive all").</summary>
+    public static byte[] MonitorAllFilter(bool extended, byte number) =>
+        SetEntireFilter(number, extended, FilterPass, enabled: true, id: 0, mask: 0);
 
     /// <summary>0x34/0x0B — automatic ISO-TP reassembly of received frames. Turn OFF for raw sniffing.</summary>
     public static byte[] SetAutoProcessing(bool on) => Command(CmdCanSettings, 0x0B, (byte)(on ? 1 : 0));
@@ -89,24 +122,35 @@ public static class ObdxDvi
     public static byte[] SendCanFrame(uint id, ReadOnlySpan<byte> data)
     {
         var payload = new byte[4 + data.Length];
-        payload[0] = (byte)(id >> 24);
-        payload[1] = (byte)(id >> 16);
-        payload[2] = (byte)(id >> 8);
-        payload[3] = (byte)id;
+        WriteBe32(payload, id);
         data.CopyTo(payload.AsSpan(4));
         return Command(CmdSendNormal, payload);
     }
 
+    /// <summary>Write a 32-bit value big-endian into the first four bytes of <paramref name="dst"/>.</summary>
+    private static void WriteBe32(Span<byte> dst, uint value)
+    {
+        dst[0] = (byte)(value >> 24);
+        dst[1] = (byte)(value >> 16);
+        dst[2] = (byte)(value >> 8);
+        dst[3] = (byte)value;
+    }
+
     /// <summary>
     /// The command sequence that puts the tool into "raw monitor + faithful TX" for a HS-CAN bus:
-    /// set protocol → baud → clear filters (monitor all) → disable ISO-TP reassembly → disable write
-    /// formatting → enable comms. Send these (in order) after the ELM→DVI handshake.
+    /// set protocol → baud → clear filters → add pass-all 11-bit and 29-bit filters → disable ISO-TP
+    /// reassembly → disable write formatting → enable comms. The OBDX forwards ONLY frames matching an
+    /// enabled PASS filter (manual Note 2), so the two monitor-all filters are what make RX flow at all;
+    /// without them the tool ACKs every config command but never delivers a frame. Send these (in order)
+    /// after the ELM→DVI handshake, holding back the final comms-enable until the RX pump is running.
     /// </summary>
     public static IReadOnlyList<byte[]> RawCanInit(byte baudCode, bool listenOnly) =>
     [
         SetProtocol(ProtoHsCan),
         SetCanBaud(baudCode),
         ClearAllFilters(),
+        MonitorAllFilter(extended: false, number: 0), // pass every 11-bit ID (GM normal-mode broadcast)
+        MonitorAllFilter(extended: true, number: 1),   // pass every 29-bit ID (J1939 decode fallback)
         SetAutoProcessing(false),
         SetAutoFormatting(false),
         SetComms(listenOnly ? CommsListenOnly : CommsOn),

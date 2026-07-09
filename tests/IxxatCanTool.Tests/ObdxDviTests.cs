@@ -90,4 +90,27 @@ public class ObdxDviTests
         Assert.Contains(seq, c => c.AsSpan().SequenceEqual(ObdxDvi.SetAutoFormatting(false)));
         Assert.True(seq[^1].AsSpan().SequenceEqual(ObdxDvi.SetComms(ObdxDvi.CommsOn))); // enable is last
     }
+
+    [Fact]
+    public void SetEntireFilter_matches_manual_hs_can_example()
+    {
+        // Manual 3.16.3: filter 0, 11-bit, FLOW, enabled, ID 7E8, mask 7FF, flow 7E0.
+        Assert.Equal(
+            new byte[] { 0x34, 0x11, 0x00, 0x00, 0x00, 0x01, 0x01,
+                         0x00, 0x00, 0x07, 0xE8, 0x00, 0x00, 0x07, 0xFF, 0x00, 0x00, 0x07, 0xE0, 0xDC },
+            ObdxDvi.SetEntireFilter(0, extended: false, ObdxDvi.FilterFlow, enabled: true,
+                                    id: 0x7E8, mask: 0x7FF, flowId: 0x7E0));
+    }
+
+    [Fact]
+    public void RawCanInit_adds_pass_all_filters_so_frames_actually_flow()
+    {
+        var seq = ObdxDvi.RawCanInit(0x06, listenOnly: false);
+        // Without an enabled PASS filter the OBDX forwards nothing (manual Note 2); both widths covered.
+        Assert.Contains(seq, c => c.AsSpan().SequenceEqual(ObdxDvi.MonitorAllFilter(extended: false, number: 0)));
+        Assert.Contains(seq, c => c.AsSpan().SequenceEqual(ObdxDvi.MonitorAllFilter(extended: true, number: 1)));
+        // Pass-all means mask 0 and filter type PASS (not FLOW — a raw sniffer must not emit flow control).
+        var monitor11 = ObdxDvi.MonitorAllFilter(extended: false, number: 0);
+        Assert.Equal(ObdxDvi.FilterPass, monitor11[5]); // XX filter-type byte
+    }
 }

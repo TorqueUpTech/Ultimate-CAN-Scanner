@@ -18,6 +18,78 @@ public interface IObdxTransport : IDisposable
     void Close();
 }
 
+/// <summary>
+/// Diagnostic decorator: wraps any <see cref="IObdxTransport"/> and appends a timestamped hex
+/// dump of every byte written (<c>TX</c>) and read (<c>RX</c>) to a log file. Enabled by setting
+/// the <c>OBDX_TRACE</c> environment variable (to <c>1</c> for the default temp-dir file, or to a
+/// full path). Off by default and non-invasive; only for diagnosing a silent link.
+/// </summary>
+public sealed class LoggingObdxTransport : IObdxTransport
+{
+    private readonly IObdxTransport _inner;
+    private readonly string _path;
+    private readonly object _gate = new();
+
+    public LoggingObdxTransport(IObdxTransport inner, string path)
+    {
+        _inner = inner;
+        _path = path;
+    }
+
+    /// <summary>The trace path if OBDX_TRACE is set, else null (tracing disabled).</summary>
+    public static string? TracePath()
+    {
+        string? v = Environment.GetEnvironmentVariable("OBDX_TRACE");
+        if (string.IsNullOrWhiteSpace(v))
+            return null;
+        bool isFlag = v is "1" or "true" or "on" or "TRUE" or "ON";
+        return isFlag ? Path.Combine(Path.GetTempPath(), "obdx-trace.log") : v;
+    }
+
+    public void Open()
+    {
+        Log("OPEN", ReadOnlySpan<byte>.Empty);
+        _inner.Open();
+    }
+
+    public void Write(byte[] data)
+    {
+        Log("TX", data);
+        _inner.Write(data);
+    }
+
+    public int Read(byte[] buffer)
+    {
+        int n = _inner.Read(buffer);
+        if (n > 0)
+            Log("RX", buffer.AsSpan(0, n));
+        return n;
+    }
+
+    public void Close() => _inner.Close();
+
+    public void Dispose()
+    {
+        Log("CLOSE", ReadOnlySpan<byte>.Empty);
+        _inner.Dispose();
+    }
+
+    private void Log(string dir, ReadOnlySpan<byte> bytes)
+    {
+        var sb = new System.Text.StringBuilder(bytes.Length * 3 + 32);
+        sb.Append(DateTime.Now.ToString("HH:mm:ss.fff")).Append(' ').Append(dir).Append(' ');
+        foreach (byte b in bytes)
+            sb.Append(b.ToString("X2")).Append(' ');
+        sb.AppendLine();
+        try
+        {
+            lock (_gate)
+                File.AppendAllText(_path, sb.ToString());
+        }
+        catch { /* tracing is best-effort; never break comms over a log write */ }
+    }
+}
+
 /// <summary>OBDX over a USB virtual COM port.</summary>
 public sealed class SerialObdxTransport : IObdxTransport
 {

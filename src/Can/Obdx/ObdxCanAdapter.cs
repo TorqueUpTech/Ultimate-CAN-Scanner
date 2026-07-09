@@ -96,6 +96,14 @@ public sealed class ObdxCanAdapter : ICanAdapter
     /// </summary>
     private static IObdxTransport CreateTransport(string key)
     {
+        IObdxTransport inner = CreateInnerTransport(key);
+        // Wrap in the byte-level tracer only when OBDX_TRACE is set, for diagnosing a silent link.
+        string? tracePath = LoggingObdxTransport.TracePath();
+        return tracePath is null ? inner : new LoggingObdxTransport(inner, tracePath);
+    }
+
+    private static IObdxTransport CreateInnerTransport(string key)
+    {
         if (key.StartsWith("serial:", StringComparison.OrdinalIgnoreCase))
             return new SerialObdxTransport(key["serial:".Length..]);
 
