@@ -2,6 +2,9 @@
 bin/
 obj/
 
+# Release packaging output (published binaries + zips)
+artifacts/
+
 # Visual Studio / Rider / VS Code
 .vs/
 .idea/
