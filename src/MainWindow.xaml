@@ -198,6 +198,16 @@
             <CheckBox Content="Auto-scroll" VerticalAlignment="Center" Margin="0,0,16,0"
                       IsChecked="{Binding AutoScroll}"/>
 
+            <CheckBox Content="RX filter" VerticalAlignment="Center" Margin="0,0,6,0"
+                      IsChecked="{Binding FilterEnabled}"
+                      ToolTip="Filter the trace grid by CAN ID (logging and gauges still see every frame)"/>
+            <TextBox Width="170" Margin="0,0,6,0" VerticalAlignment="Center"
+                     Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged}"
+                     ToolTip="Hex IDs, space/comma separated, ranges allowed — e.g. 100 7E8 700-7FF"/>
+            <CheckBox Content="Exclude" VerticalAlignment="Center" Margin="0,0,16,0"
+                      IsChecked="{Binding FilterExclude}"
+                      ToolTip="Checked: hide these IDs. Unchecked: show only these IDs."/>
+
             <Button Content="Load DBC…" Width="100" Margin="0,0,6,0" Click="OnLoadDbc"/>
             <Button Content="Clear DBC" Width="84" Margin="0,0,8,0" Click="OnClearDbc"/>
             <TextBlock Text="{Binding DbcFileName}" VerticalAlignment="Center" Foreground="#555"/>

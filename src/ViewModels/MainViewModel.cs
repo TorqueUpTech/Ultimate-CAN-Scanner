@@ -87,6 +87,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     // cadence regardless of bus load.
     private readonly ConcurrentDictionary<uint, CanFrame> _latestFrame = new();
 
+    // ---- RX ID filter ----
+    // Compiled acceptance filter for the trace grid, read on the RX/playback thread and
+    // swapped (never mutated) on the UI thread, so a single volatile ref is enough. Null =
+    // pass everything. Filtering is display-only: logging and gauges still see every frame.
+    private string _filterText = "";
+    private bool _filterEnabled;
+    private bool _filterExclude;
+    private volatile CanIdFilter? _rxFilter;
+
     public MainViewModel(Dispatcher dispatcher)
     {
         _dispatcher = dispatcher;
@@ -190,6 +199,36 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         get => _autoScroll;
         set => Set(ref _autoScroll, value);
+    }
+
+    // ---- RX ID filter ----
+
+    /// <summary>
+    /// CAN IDs (hex) the trace grid should accept, e.g. "100 7E8 0x120" or a range
+    /// "700-7FF". Space/comma separated; "0x" prefix optional. Malformed tokens are
+    /// ignored. Only takes effect while <see cref="FilterEnabled"/> is on.
+    /// </summary>
+    public string FilterText
+    {
+        get => _filterText;
+        set { if (Set(ref _filterText, value)) RebuildRxFilter(); }
+    }
+
+    /// <summary>Turn the RX ID filter on/off. Off shows every frame.</summary>
+    public bool FilterEnabled
+    {
+        get => _filterEnabled;
+        set { if (Set(ref _filterEnabled, value)) RebuildRxFilter(); }
+    }
+
+    /// <summary>
+    /// False (default) = allowlist (show only the listed IDs); true = blocklist
+    /// (show everything except the listed IDs).
+    /// </summary>
+    public bool FilterExclude
+    {
+        get => _filterExclude;
+        set { if (Set(ref _filterExclude, value)) RebuildRxFilter(); }
     }
 
     public string DbcFileName
@@ -911,6 +950,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private void EnqueueForDisplay(CanFrame frame)
     {
         _latestFrame[frame.Identifier & IdMask] = frame;
+        if (!PassesRxFilter(frame))
+            return;
         // Pass the decoder, don't run it: the row decodes lazily only if it's rendered.
         _pending.Enqueue(new CanFrameRow(frame, DecodeFrame));
     }
@@ -920,11 +961,45 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void OnFrameReceived(CanFrame frame)
     {
+        // Log and gauge-sample every frame; the filter only trims what the grid shows.
         _logger.Log(frame);
         _latestFrame[frame.Identifier & IdMask] = frame;
+        if (!PassesRxFilter(frame))
+            return;
         // Keep the RX thread cheap: log + buffer only. Decoding is deferred to the row,
         // which decodes lazily on the UI thread only if the grid actually renders it.
         _pending.Enqueue(new CanFrameRow(frame, DecodeFrame));
+    }
+
+    // ---- RX ID filter ----
+
+    /// <summary>Trace-grid acceptance test; true when no filter is active.</summary>
+    private bool PassesRxFilter(CanFrame frame)
+    {
+        var filter = _rxFilter;
+        return filter is null || filter.Passes(frame.Identifier & IdMask);
+    }
+
+    /// <summary>(Re)compile the filter from the current text/mode, or clear it when disabled/empty.</summary>
+    private void RebuildRxFilter()
+    {
+        if (!_filterEnabled)
+        {
+            _rxFilter = null;
+            return;
+        }
+
+        var filter = CanIdFilter.Parse(_filterText, _filterExclude);
+        _rxFilter = filter;
+        if (filter is null)
+        {
+            Status = "RX filter on, but no valid IDs entered — showing all frames.";
+            return;
+        }
+
+        Status = filter.Exclude
+            ? $"RX filter: hiding {filter.Count} ID(s)/range(s)."
+            : $"RX filter: showing only {filter.Count} ID(s)/range(s).";
     }
 
     /// <summary>Drain buffered frames onto the UI collection (runs on the UI thread).</summary>
