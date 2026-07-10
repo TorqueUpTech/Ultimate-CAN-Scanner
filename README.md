@@ -14,6 +14,10 @@ USB-to-CAN V2 adapters, the **OBDX Pro** scantool over its DVI protocol, and any
 - Enumerate and connect to any installed VCI device (USB-to-CAN V2, etc.)
 - Selectable bit rate (10 kbit … 1 Mbit) and listen-only mode
 - Live receive trace with hardware timestamps (RX + self-received TX), with an **auto-scroll** toggle
+- **RX ID filter**: trim the trace grid to just the CAN IDs you care about — an allowlist
+  (show only listed IDs) or blocklist (**Exclude**). Accepts space/comma-separated hex IDs
+  with an optional `0x` prefix and inclusive ranges, e.g. `100 7E8 700-7FF`. Display-only:
+  logging and the live gauges still see every frame
 - Transmit standard (11-bit) or extended (29-bit) data/RTR frames
 - **Auto-transmit / repeat** of a raw frame or a DBC signal at a configurable interval (ms)
 - On-the-fly decode: **DBC** database (loaded at runtime) with **J1939** as a fallback
@@ -66,6 +70,7 @@ dotnet run --project src\IxxatCanTool.csproj -c Release
 | `src/Can/J2534/J2534CanAdapter.cs` | J2534 backend: load DLL, raw-CAN connect, pass-all filters, RX pump, TX, software-timer cyclic. |
 | `src/Can/CanDeviceInfo.cs` | Adapter-agnostic device descriptor (`Adapter` + opaque `Key`). |
 | `src/Can/CanFrame.cs` | Driver-agnostic frame model. |
+| `src/Can/CanIdFilter.cs` | Immutable RX trace filter: parse hex IDs/ranges + include/exclude membership test. |
 | `src/Decoding/J1939Decoder.cs` | 29-bit ID → J1939 fields + known-PGN table. |
 | `src/Decoding/DbcDecoder.cs` | Loads a DBC, decodes frames to signals, exposes messages for TX. |
 | `src/Decoding/DbcMessageInfo.cs` | UI-facing DBC message/signal wrappers + TX signal packing. |
@@ -130,6 +135,13 @@ dotnet run --project src\IxxatCanTool.csproj -c Release
   socket's `ClockFrequency` / `CyclicMessageTimerDivisor`. One stream runs at a
   time (raw *or* DBC signal); starting one stops the other. If an adapter reports
   no scheduler support, Repeat reports it in the status bar.
+- **RX ID filter** (`src/Can/CanIdFilter.cs`) trims what the trace grid shows without
+  touching the RX pipeline: it is applied at the single point where frames are buffered for
+  display (live RX *and* log playback), so CSV logging and the live gauges still receive every
+  frame. The filter text compiles to an immutable `CanIdFilter` (a set of inclusive `[lo,hi]`
+  ID ranges plus include/exclude mode) that is swapped into a `volatile` field on the UI thread
+  and read lock-free on the RX/playback thread. IDs are masked to 29 bits, so driver flag bits
+  never affect matching; malformed tokens are skipped so live typing never throws.
 - The trace grid is fed by a **50 ms batched flush** (`ConcurrentQueue` drained by
   a `DispatcherTimer`) instead of one UI update per frame. This keeps buttons
   responsive under heavy bus load (previously a fast bus posted `Normal`-priority
