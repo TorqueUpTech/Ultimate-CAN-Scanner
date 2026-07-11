@@ -16,6 +16,7 @@ public sealed class LiveSignal : INotifyPropertyChanged
     private double? _value;
     private double _min;
     private double _max;
+    private bool _isSelected = true;
 
     public LiveSignal(string messageName, string signalName, string unit, double min, double max)
     {
@@ -30,6 +31,28 @@ public sealed class LiveSignal : INotifyPropertyChanged
     public string MessageName { get; }
     public string SignalName { get; }
     public string Unit { get; }
+
+    /// <summary>
+    /// Whether this signal is shown as a gauge when its CAN ID is enabled. Lets the user
+    /// deselect individual signals of an ID. Raises <see cref="SelectionChanged"/> — a
+    /// dedicated event so toggling it rebuilds the gauge list without putting the frequent
+    /// value-update notifications on that path.
+    /// </summary>
+    public bool IsSelected
+    {
+        get => _isSelected;
+        set
+        {
+            if (_isSelected == value)
+                return;
+            _isSelected = value;
+            OnPropertyChanged();
+            SelectionChanged?.Invoke();
+        }
+    }
+
+    /// <summary>Raised only when <see cref="IsSelected"/> changes (not on value updates).</summary>
+    public event Action? SelectionChanged;
 
     public bool HasValue => _value.HasValue;
 
@@ -83,6 +106,23 @@ public sealed class LiveSignal : INotifyPropertyChanged
             OnPropertyChanged(nameof(MinText));
             OnPropertyChanged(nameof(MaxText));
         }
+    }
+
+    /// <summary>
+    /// Clear the displayed value back to "no data" (blank card, empty bar). Used when a
+    /// message goes stale and the user has opted out of holding the last value.
+    /// </summary>
+    public void Reset()
+    {
+        if (_value is null)
+            return;
+        _value = null;
+        if (!_fixedRange) { _min = 0; _max = 0; }
+        OnPropertyChanged(nameof(ValueText));
+        OnPropertyChanged(nameof(Fraction));
+        OnPropertyChanged(nameof(HasValue));
+        OnPropertyChanged(nameof(MinText));
+        OnPropertyChanged(nameof(MaxText));
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

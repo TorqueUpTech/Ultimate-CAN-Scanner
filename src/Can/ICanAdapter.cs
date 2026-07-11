@@ -27,6 +27,13 @@ public interface ICanAdapter : IDisposable
 
     int StartCyclic(uint identifier, bool extended, byte[] data, bool remote, double intervalMs);
 
+    /// <summary>
+    /// Replace the payload of a running cyclic stream in place (same ID/interval), so a value
+    /// edited in the UI is picked up without stopping and restarting the stream. No-op if the
+    /// handle is unknown (already stopped).
+    /// </summary>
+    void UpdateCyclic(int handle, byte[] data);
+
     void StopCyclic(int handle);
 
     void StopAllCyclic();

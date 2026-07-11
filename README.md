@@ -14,10 +14,11 @@ USB-to-CAN V2 adapters, the **OBDX Pro** scantool over its DVI protocol, and any
 - Enumerate and connect to any installed VCI device (USB-to-CAN V2, etc.)
 - Selectable bit rate (10 kbit … 1 Mbit) and listen-only mode
 - Live receive trace with hardware timestamps (RX + self-received TX), with an **auto-scroll** toggle
-- **RX ID filter**: trim the trace grid to just the CAN IDs you care about — an allowlist
-  (show only listed IDs) or blocklist (**Exclude**). Accepts space/comma-separated hex IDs
-  with an optional `0x` prefix and inclusive ranges, e.g. `100 7E8 700-7FF`. Display-only:
-  logging and the live gauges still see every frame
+- **CAN ID filter**: focus on just the CAN IDs you care about — an allowlist (show only listed
+  IDs) or blocklist (**Exclude**). Accepts space/comma-separated hex IDs with an optional `0x`
+  prefix and inclusive ranges, e.g. `100 7E8 700-7FF`. It trims the trace grid **and gates log
+  replay** — filtered-out IDs aren't replayed onto the bus / over TCP. Logging and the live
+  gauges still see every frame
 - Transmit standard (11-bit) or extended (29-bit) data/RTR frames
 - **Auto-transmit / repeat** of a raw frame or a DBC signal at a configurable interval (ms)
 - On-the-fly decode: **DBC** database (loaded at runtime) with **J1939** as a fallback
@@ -25,6 +26,9 @@ USB-to-CAN V2 adapters, the **OBDX Pro** scantool over its DVI protocol, and any
 - **Multi-signal TX list**: queue several signals (**Add to list**), then **Send All** or **Repeat All**.
   Signals sharing a CAN ID are packed into one frame; different IDs send as separate frames and, when
   repeating, as separate cyclic streams. Values are editable inline in the list
+- **Rolling counters**: tick **Roll** on a TX-list entry (auto-ticked for counter-named signals) to send
+  it as an alive/rolling counter — every transmitted frame increments it and it wraps at the DBC min/max.
+  Queue the counter alongside the message's data signals and **Repeat All**; the counter advances each frame
 - CSV trace logging
 - **Log playback**: open a captured CSV trace and either *view* all frames at once, *replay* them
   into the grid at recorded timing (offline), or *replay onto the CAN bus* at recorded timing —
@@ -34,7 +38,10 @@ USB-to-CAN V2 adapters, the **OBDX Pro** scantool over its DVI protocol, and any
   frames into numeric signals
 - **Live Gauges**: a **Live Gauges** tab turns decoded signals into human-friendly gauge cards
   (big value + unit + a bar scaled to the DBC min/max) that update in real time from the live
-  bus *or* from playback. Tick each CAN ID to watch its signals; needs a DBC loaded
+  bus *or* from playback. Tick each CAN ID to watch its signals, then **untick individual
+  signals** of that ID you don't want as gauges; needs a DBC loaded. By default a gauge holds
+  its last value when a message stops arriving; tick **Blank gauges when stale** to clear it to
+  "—" after ~1.5 s of silence instead
 
 ## Requirements
 
@@ -78,7 +85,7 @@ dotnet run --project src\IxxatCanTool.csproj -c Release
 | `src/Logging/LogFile.cs` | Reads a captured CSV trace back into `CanFrame`s (can-trace, IXXAT canAnalyser3 export + legacy GM formats) for playback. |
 | `src/ViewModels/MainViewModel.cs` | UI state, commands, frame buffering, playback + graph series. |
 | `src/ViewModels/PlotSignal.cs` | One plottable signal time-series (times/values + selection flag). |
-| `src/ViewModels/LiveSignal.cs` | One live gauge: latest value + DBC/observed range for the bar. |
+| `src/ViewModels/LiveSignal.cs` | One live gauge: latest value + DBC/observed range for the bar, plus a per-signal `IsSelected` pick. |
 | `src/ViewModels/LiveMessageGroup.cs` | A CAN ID (DBC message) that can be enabled to show its gauges. |
 | `src/ViewModels/TxSignalEntry.cs` | One queued signal (message + signal + editable value) in the multi-signal TX list. |
 | `src/MainWindow.xaml` | WPF UI (Trace tab + Live Gauges tab). |
@@ -135,13 +142,36 @@ dotnet run --project src\IxxatCanTool.csproj -c Release
   socket's `ClockFrequency` / `CyclicMessageTimerDivisor`. One stream runs at a
   time (raw *or* DBC signal); starting one stops the other. If an adapter reports
   no scheduler support, Repeat reports it in the status bar.
-- **RX ID filter** (`src/Can/CanIdFilter.cs`) trims what the trace grid shows without
-  touching the RX pipeline: it is applied at the single point where frames are buffered for
-  display (live RX *and* log playback), so CSV logging and the live gauges still receive every
-  frame. The filter text compiles to an immutable `CanIdFilter` (a set of inclusive `[lo,hi]`
-  ID ranges plus include/exclude mode) that is swapped into a `volatile` field on the UI thread
-  and read lock-free on the RX/playback thread. IDs are masked to 29 bits, so driver flag bits
-  never affect matching; malformed tokens are skipped so live typing never throws.
+- **Rolling counters**: a TX-list entry with **Roll** ticked is sent as an alive/rolling
+  counter. Because a fixed-payload cyclic stream (hardware scheduler *or* software timer) can't
+  advance a counter, any CAN ID whose group contains a roller is driven instead by a dedicated
+  VM timer (`RollTick`): each period it re-packs the frame with the counter at its current value
+  (other signals in the group are read live from the list, so their edits still apply), sends it,
+  then advances every counter — count `Minimum`→`Maximum`, step = the signal's DBC `Factor`,
+  wrapping back to `Minimum` (bit-width fallback if the DBC declares no range). Groups **without**
+  a roller keep using the adapter's cyclic scheduler as before. Which signals roll is decided by a
+  name heuristic (GM suffixes `RollCnt`/`RolngCnt`/`RlgCnt`/`Cntr`/`…RC`, `…Src` excluded) that
+  pre-ticks the box, plus a manual per-entry override. The rolling list reference is swapped, never
+  mutated, so the timer thread iterates it lock-free.
+- **Live value updates while repeating**: editing the raw data box, the DBC signal
+  value, or a TX-list entry value **updates the running cyclic stream in place** — no
+  stop/start. `ICanAdapter.UpdateCyclic(handle, data)` swaps the payload a stream sends:
+  the software-timer backends (OBDX, J2534, and the Ixxat fallback) hold the payload in a
+  `volatile` slot the timer reads each tick, so a swap is atomic and lock-light; the Ixxat
+  hardware scheduler stops the `ICanCyclicTXMsg`, rewrites its bytes and restarts it. The VM
+  routes an edit only to the matching stream (it tracks which source — raw / DBC signal / TX
+  list — is repeating), re-encoding DBC values against the signal pinned when Repeat started
+  and re-packing a TX-list frame from its group's current entry values. The stream's **ID and
+  interval are fixed** for its lifetime — changing those still needs a stop/start.
+- **CAN ID filter** (`src/Can/CanIdFilter.cs`) trims what the trace grid shows *and* gates log
+  replay. For the live trace and *Replay → grid* it is applied where frames are buffered for
+  display; for ***Replay → bus* and *Replay → TCP* it also gates emission** — a filtered-out ID
+  is not transmitted onto the bus or broadcast over TCP, not just hidden from the grid. CSV
+  logging and the live gauges still receive every frame (gauges stay live even for IDs skipped
+  from replay). The filter text compiles to an immutable `CanIdFilter` (a set of inclusive
+  `[lo,hi]` ID ranges plus include/exclude mode) that is swapped into a `volatile` field on the
+  UI thread and read lock-free on the RX/playback thread. IDs are masked to 29 bits, so driver
+  flag bits never affect matching; malformed tokens are skipped so live typing never throws.
 - The trace grid is fed by a **50 ms batched flush** (`ConcurrentQueue` drained by
   a `DispatcherTimer`) instead of one UI update per frame. This keeps buttons
   responsive under heavy bus load (previously a fast bus posted `Normal`-priority

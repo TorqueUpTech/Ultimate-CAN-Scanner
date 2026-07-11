@@ -13,16 +13,35 @@ namespace IxxatCanTool.ViewModels;
 public sealed class TxSignalEntry : INotifyPropertyChanged
 {
     private double _value;
+    private bool _isRolling;
 
     public TxSignalEntry(DbcMessageInfo message, DbcSignalInfo signal, double value)
     {
         Message = message;
         Signal = signal;
         _value = value;
+        _isRolling = signal.IsLikelyRollingCounter;
     }
 
     public DbcMessageInfo Message { get; }
     public DbcSignalInfo Signal { get; }
+
+    /// <summary>
+    /// When set, this signal is sent as a rolling counter while repeating: each transmitted
+    /// frame increments it (step = DBC factor) and it wraps at the DBC min/max. The inline
+    /// value box is ignored for a rolling entry. Pre-set from the signal name; user-overridable.
+    /// </summary>
+    public bool IsRolling
+    {
+        get => _isRolling;
+        set
+        {
+            if (_isRolling == value)
+                return;
+            _isRolling = value;
+            OnPropertyChanged();
+        }
+    }
 
     public double Value
     {

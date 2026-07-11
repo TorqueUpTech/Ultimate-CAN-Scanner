@@ -55,8 +55,42 @@ public sealed class DbcSignalInfo
     public string Unit => Signal.Unit ?? string.Empty;
     public double Minimum => Signal.Minimum;
     public double Maximum => Signal.Maximum;
+    public double Factor => Signal.Factor;
+    public int Length => Signal.Length;
 
     public string Display => string.IsNullOrEmpty(Unit) ? Name : $"{Name} [{Unit}]";
+
+    // GM rolling/alive-counter name conventions (case-insensitive suffixes): e.g.
+    // StWhlAngAliveRollCnt, BrkPedPosAlvRolngCnt, ACCCmndAlvRlgCnt, ETC_FrmCntr, TCAliveRC,
+    // CmndAxlTrqARC. The bare "rc" suffix catches the AliveRC/ARC family but would also hit
+    // "...Src" (Source), so that's excluded.
+    private static readonly string[] CounterSuffixes =
+    [
+        "rollcnt", "rolngcnt", "rlgcnt", "rollgcnt", "rollingcnt", "rollcount",
+        "rollingcount", "alivecnt", "alivecount", "msgcnt", "cntr", "counter"
+    ];
+
+    /// <summary>
+    /// Best-effort guess that this signal is a rolling/alive counter, from its DBC name.
+    /// Used to pre-tick the TX-list "Roll" box; the user can override either way.
+    /// </summary>
+    public bool IsLikelyRollingCounter => IsRollingCounterName(Name);
+
+    /// <summary>Name-only heuristic for a rolling/alive counter (see <see cref="CounterSuffixes"/>).</summary>
+    public static bool IsRollingCounterName(string? name)
+    {
+        if (string.IsNullOrEmpty(name))
+            return false;
+        string n = name.ToLowerInvariant();
+        if (n.EndsWith("src", StringComparison.Ordinal))
+            return false; // "…Src" (Source), not a counter
+        if (n.EndsWith("rc", StringComparison.Ordinal))
+            return true;  // AliveRC / ARC / AlRC family
+        foreach (var s in CounterSuffixes)
+            if (n.EndsWith(s, StringComparison.Ordinal))
+                return true;
+        return false;
+    }
 
     /// <summary>
     /// Encode <paramref name="value"/> (a physical value) into a fresh frame

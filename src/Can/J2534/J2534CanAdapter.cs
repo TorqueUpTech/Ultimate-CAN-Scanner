@@ -28,7 +28,7 @@ public sealed class J2534CanAdapter : ICanAdapter
     private readonly object _writeLock = new();
     private readonly object _cyclicLock = new();
     private readonly Stopwatch _clock = new();
-    private readonly Dictionary<int, Timer> _cyclic = [];
+    private readonly Dictionary<int, SoftCyclic> _cyclic = [];
     private int _nextCyclicHandle;
 
     private J2534Library? _lib;
@@ -244,22 +244,36 @@ public sealed class J2534CanAdapter : ICanAdapter
         if (data.Length > 8)
             throw new ArgumentException("Classic CAN allows at most 8 data bytes.", nameof(data));
 
-        byte[] payload = (byte[])data.Clone();
         int period = (int)Math.Max(1, Math.Round(intervalMs));
         lock (_cyclicLock)
         {
             int handle = _nextCyclicHandle++;
-            _cyclic[handle] = new Timer(
-                _ => CyclicTick(handle, identifier, extended, payload, remote), null, 0, period);
+            // Hold the payload in a swappable slot so UpdateCyclic can change what each tick
+            // sends without stopping the timer.
+            var stream = new SoftCyclic((byte[])data.Clone());
+            stream.Timer = new Timer(
+                _ => CyclicTick(handle, identifier, extended, stream, remote), null, 0, period);
+            _cyclic[handle] = stream;
             return handle;
         }
     }
 
-    private void CyclicTick(int handle, uint id, bool extended, byte[] data, bool remote)
+    /// <summary>Replace a running stream's payload in place (see <see cref="ICanAdapter.UpdateCyclic"/>).</summary>
+    public void UpdateCyclic(int handle, byte[] data)
+    {
+        if (data.Length > 8)
+            throw new ArgumentException("Classic CAN allows at most 8 data bytes.", nameof(data));
+
+        lock (_cyclicLock)
+            if (_cyclic.TryGetValue(handle, out SoftCyclic? stream))
+                stream.Payload = (byte[])data.Clone();
+    }
+
+    private void CyclicTick(int handle, uint id, bool extended, SoftCyclic stream, bool remote)
     {
         try
         {
-            Send(id, extended, data, remote);
+            Send(id, extended, stream.Payload, remote);
         }
         catch (Exception ex)
         {
@@ -271,18 +285,25 @@ public sealed class J2534CanAdapter : ICanAdapter
     public void StopCyclic(int handle)
     {
         lock (_cyclicLock)
-            if (_cyclic.Remove(handle, out Timer? timer))
-                timer.Dispose();
+            if (_cyclic.Remove(handle, out SoftCyclic? stream))
+                stream.Timer?.Dispose();
     }
 
     public void StopAllCyclic()
     {
         lock (_cyclicLock)
         {
-            foreach (Timer timer in _cyclic.Values)
-                timer.Dispose();
+            foreach (SoftCyclic stream in _cyclic.Values)
+                stream.Timer?.Dispose();
             _cyclic.Clear();
         }
+    }
+
+    /// <summary>A software-timer cyclic stream whose payload can be swapped live (see UpdateCyclic).</summary>
+    private sealed class SoftCyclic(byte[] payload)
+    {
+        public Timer? Timer;
+        public volatile byte[] Payload = payload;
     }
 
     public void Disconnect()

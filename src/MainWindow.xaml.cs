@@ -126,6 +126,14 @@ public partial class MainWindow : Window
                 ParseInterval(TxInterval.Text));
     }
 
+    // While a raw/DBC-signal repeat is running, push edits live so the stream picks up the new
+    // value without a stop/start. Fires during InitializeComponent too, before _vm is set.
+    private void OnTxDataChanged(object sender, System.Windows.Controls.TextChangedEventArgs e) =>
+        _vm?.UpdateRepeatRaw(TxData.Text);
+
+    private void OnDbcValueChanged(object sender, System.Windows.Controls.TextChangedEventArgs e) =>
+        _vm?.UpdateRepeatDbcValue(DbcValue.Text);
+
     private void OnSendSignal(object sender, RoutedEventArgs e) =>
         _vm.SendDbcSignal(DbcValue.Text);
 

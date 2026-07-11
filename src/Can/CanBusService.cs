@@ -44,7 +44,7 @@ public sealed class CanBusService : ICanAdapter
     private AutoResetEvent? _rxEvent;
 
     private readonly Dictionary<int, ICanCyclicTXMsg> _cyclic = new();
-    private readonly Dictionary<int, System.Threading.Timer> _softCyclic = new();
+    private readonly Dictionary<int, SoftCyclic> _softCyclic = new();
     private int _nextCyclicHandle;
 
     private Thread? _rxThread;
@@ -280,23 +280,50 @@ public sealed class CanBusService : ICanAdapter
             }
             else
             {
-                // Software fallback: copy the payload so the caller can't mutate it.
-                byte[] payload = (byte[])data.Clone();
+                // Software fallback: hold the payload in a swappable slot so UpdateCyclic can
+                // change what each tick sends without stopping the timer.
+                var stream = new SoftCyclic((byte[])data.Clone());
                 int period = (int)Math.Max(1, Math.Round(intervalMs));
-                _softCyclic[handle] = new System.Threading.Timer(
-                    _ => SoftCyclicTick(handle, identifier, extended, payload, remote),
+                stream.Timer = new System.Threading.Timer(
+                    _ => SoftCyclicTick(handle, identifier, extended, stream, remote),
                     null, 0, period);
+                _softCyclic[handle] = stream;
             }
 
             return handle;
         }
     }
 
-    private void SoftCyclicTick(int handle, uint id, bool extended, byte[] data, bool remote)
+    /// <summary>Replace a running stream's payload in place (see <see cref="ICanAdapter.UpdateCyclic"/>).</summary>
+    public void UpdateCyclic(int handle, byte[] data)
+    {
+        if (data.Length > 8)
+            throw new ArgumentException("Classic CAN allows at most 8 data bytes.", nameof(data));
+
+        lock (_sync)
+        {
+            if (_cyclic.TryGetValue(handle, out var msg))
+            {
+                // The scheduler transmits a snapshot; stop, rewrite the bytes, restart.
+                try { msg.Stop(); } catch { /* best effort */ }
+                msg.DataLength = (byte)data.Length;
+                for (int i = 0; i < data.Length; i++)
+                    msg[i] = data[i];
+                msg.Start(0);
+                _scheduler?.Resume();
+            }
+            else if (_softCyclic.TryGetValue(handle, out var stream))
+            {
+                stream.Payload = (byte[])data.Clone();
+            }
+        }
+    }
+
+    private void SoftCyclicTick(int handle, uint id, bool extended, SoftCyclic stream, bool remote)
     {
         try
         {
-            Send(id, extended, data, remote);
+            Send(id, extended, stream.Payload, remote);
         }
         catch (Exception ex)
         {
@@ -306,14 +333,21 @@ public sealed class CanBusService : ICanAdapter
         }
     }
 
+    /// <summary>A software-timer cyclic stream whose payload can be swapped live (see UpdateCyclic).</summary>
+    private sealed class SoftCyclic(byte[] payload)
+    {
+        public System.Threading.Timer? Timer;
+        public volatile byte[] Payload = payload;
+    }
+
     public void StopCyclic(int handle)
     {
         lock (_sync)
         {
             if (_cyclic.Remove(handle, out var msg))
                 try { msg.Stop(); } catch { /* best effort */ }
-            if (_softCyclic.Remove(handle, out var timer))
-                timer.Dispose();
+            if (_softCyclic.Remove(handle, out var stream))
+                stream.Timer?.Dispose();
         }
     }
 
@@ -331,8 +365,8 @@ public sealed class CanBusService : ICanAdapter
             try { msg.Stop(); } catch { /* best effort */ }
         _cyclic.Clear();
 
-        foreach (var timer in _softCyclic.Values)
-            timer.Dispose();
+        foreach (var stream in _softCyclic.Values)
+            stream.Timer?.Dispose();
         _softCyclic.Clear();
     }
 

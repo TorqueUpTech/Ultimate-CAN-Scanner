@@ -4,6 +4,9 @@
         xmlns:sp="clr-namespace:ScottPlot.WPF;assembly=ScottPlot.WPF"
         Title="Ultimate CAN Scanner" Height="640" Width="1040"
         WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </Window.Resources>
     <DockPanel Margin="8">
 
         <!-- Connection bar -->
@@ -50,7 +53,9 @@
                 <CheckBox x:Name="TxRemote" Content="RTR" VerticalAlignment="Center" Margin="0,0,12,0"/>
 
                 <TextBlock Text="Data (hex bytes):" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                <TextBox x:Name="TxData" Width="240" Margin="0,0,8,0" Text="11 22 33 44"/>
+                <TextBox x:Name="TxData" Width="240" Margin="0,0,8,0" Text="11 22 33 44"
+                         TextChanged="OnTxDataChanged"
+                         ToolTip="Edits apply live while repeating (no stop/start needed)"/>
                 <Button Content="Send" Width="70" Margin="0,0,12,0" Click="OnSend" IsEnabled="{Binding IsConnected}"/>
 
                 <TextBlock Text="every" VerticalAlignment="Center" Margin="0,0,4,0"/>
@@ -78,7 +83,9 @@
                               SelectedItem="{Binding SelectedDbcSignal}"
                               DisplayMemberPath="Display"/>
                     <TextBlock Text="Value:" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                    <TextBox x:Name="DbcValue" Width="80" Margin="0,0,8,0" Text="0"/>
+                    <TextBox x:Name="DbcValue" Width="80" Margin="0,0,8,0" Text="0"
+                             TextChanged="OnDbcValueChanged"
+                             ToolTip="Edits apply live while repeating (no stop/start needed)"/>
                     <Button Content="Send" Width="70" Margin="0,0,8,0"
                             Click="OnSendSignal" IsEnabled="{Binding IsConnected}"/>
                     <Button Content="Add to list ↓" Width="92" Margin="0,0,12,0"
@@ -121,9 +128,10 @@
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="170"/>
-                                        <ColumnDefinition Width="190"/>
+                                        <ColumnDefinition Width="180"/>
                                         <ColumnDefinition Width="Auto"/>
-                                        <ColumnDefinition Width="90"/>
+                                        <ColumnDefinition Width="70"/>
+                                        <ColumnDefinition Width="Auto"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" Text="{Binding MessageText}"
@@ -131,9 +139,25 @@
                                     <TextBlock Grid.Column="1" Text="{Binding SignalText}"
                                                VerticalAlignment="Center" Foreground="#444"/>
                                     <TextBlock Grid.Column="2" Text="=" VerticalAlignment="Center" Margin="6,0"/>
-                                    <TextBox Grid.Column="3" Width="80" VerticalAlignment="Center"
-                                             Text="{Binding ValueText, UpdateSourceTrigger=PropertyChanged}"/>
-                                    <Button Grid.Column="4" Content="✕" Width="24" Margin="8,0,0,0"
+                                    <TextBox Grid.Column="3" Width="64" VerticalAlignment="Center"
+                                             Text="{Binding ValueText, UpdateSourceTrigger=PropertyChanged}">
+                                        <TextBox.Style>
+                                            <Style TargetType="TextBox">
+                                                <Style.Triggers>
+                                                    <!-- A rolling counter drives its own value; the box is moot. -->
+                                                    <DataTrigger Binding="{Binding IsRolling}" Value="True">
+                                                        <Setter Property="IsEnabled" Value="False"/>
+                                                        <Setter Property="ToolTip"
+                                                                Value="Ignored while Roll is ticked — the counter drives this signal."/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBox.Style>
+                                    </TextBox>
+                                    <CheckBox Grid.Column="4" Content="Roll" IsChecked="{Binding IsRolling}"
+                                              VerticalAlignment="Center" Margin="8,0,0,0"
+                                              ToolTip="Send as a rolling counter: every transmitted frame increments it, wrapping at the DBC min/max. Auto-ticked for counter-named signals."/>
+                                    <Button Grid.Column="5" Content="✕" Width="24" Margin="8,0,0,0"
                                             Click="OnRemoveTxEntry" Tag="{Binding}"
                                             ToolTip="Remove from list"/>
                                 </Grid>
@@ -198,15 +222,15 @@
             <CheckBox Content="Auto-scroll" VerticalAlignment="Center" Margin="0,0,16,0"
                       IsChecked="{Binding AutoScroll}"/>
 
-            <CheckBox Content="RX filter" VerticalAlignment="Center" Margin="0,0,6,0"
+            <CheckBox Content="ID filter" VerticalAlignment="Center" Margin="0,0,6,0"
                       IsChecked="{Binding FilterEnabled}"
-                      ToolTip="Filter the trace grid by CAN ID (logging and gauges still see every frame)"/>
+                      ToolTip="Filter by CAN ID: trims the trace grid and gates log replay (filtered IDs aren't replayed onto the bus/TCP). Logging and gauges still see every frame."/>
             <TextBox Width="170" Margin="0,0,6,0" VerticalAlignment="Center"
                      Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged}"
                      ToolTip="Hex IDs, space/comma separated, ranges allowed — e.g. 100 7E8 700-7FF"/>
             <CheckBox Content="Exclude" VerticalAlignment="Center" Margin="0,0,16,0"
                       IsChecked="{Binding FilterExclude}"
-                      ToolTip="Checked: hide these IDs. Unchecked: show only these IDs."/>
+                      ToolTip="Checked: hide/skip these IDs. Unchecked: show/replay only these IDs."/>
 
             <Button Content="Load DBC…" Width="100" Margin="0,0,6,0" Click="OnLoadDbc"/>
             <Button Content="Clear DBC" Width="84" Margin="0,0,8,0" Click="OnClearDbc"/>
@@ -281,8 +305,11 @@
                 <DockPanel Grid.Column="0" Margin="0,4,4,0">
                     <TextBlock DockPanel.Dock="Top" Text="CAN IDs (from DBC)"
                                FontWeight="SemiBold" Margin="2,0,0,2"/>
-                    <TextBlock DockPanel.Dock="Top" Text="Tick an ID to watch its signals live."
+                    <TextBlock DockPanel.Dock="Top" Text="Tick an ID to watch its signals live, then untick any signal you don't want."
                                Foreground="#888" FontSize="11" TextWrapping="Wrap" Margin="2,0,0,6"/>
+                    <CheckBox DockPanel.Dock="Top" Content="Blank gauges when stale"
+                              IsChecked="{Binding ClearStaleGauges}" Margin="2,0,0,6"
+                              ToolTip="When a message stops arriving (~1.5 s), clear its gauges to '—' instead of holding the last value."/>
                     <WrapPanel DockPanel.Dock="Bottom" Margin="2,4,0,0">
                         <Button Content="All" Width="48" Margin="0,0,4,0" Click="OnGaugeAll"/>
                         <Button Content="None" Width="48" Click="OnGaugeNone"/>
@@ -291,12 +318,26 @@
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <CheckBox IsChecked="{Binding IsEnabled, Mode=TwoWay}" Margin="0,2,0,2">
-                                    <StackPanel Margin="2,0,0,0">
-                                        <TextBlock Text="{Binding IdText}" FontFamily="Consolas"/>
-                                        <TextBlock Text="{Binding Name}" Foreground="#777" FontSize="11"/>
-                                    </StackPanel>
-                                </CheckBox>
+                                <StackPanel Margin="0,2,0,3">
+                                    <CheckBox IsChecked="{Binding IsEnabled, Mode=TwoWay}">
+                                        <StackPanel Margin="2,0,0,0">
+                                            <TextBlock Text="{Binding IdText}" FontFamily="Consolas"/>
+                                            <TextBlock Text="{Binding Name}" Foreground="#777" FontSize="11"/>
+                                        </StackPanel>
+                                    </CheckBox>
+                                    <!-- Per-signal picks, shown only once the ID is enabled. -->
+                                    <ItemsControl ItemsSource="{Binding Signals}" Margin="20,2,0,2"
+                                                  Visibility="{Binding IsEnabled, Converter={StaticResource BoolToVis}}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <CheckBox Content="{Binding SignalName}"
+                                                          IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                                          FontSize="11" Margin="0,1,0,1"
+                                                          Foreground="#555"/>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
                     </ListBox>

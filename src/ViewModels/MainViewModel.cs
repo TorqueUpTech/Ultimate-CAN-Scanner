@@ -37,6 +37,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private const int MaxRows = 5000;
     private const int MaxRowsPerFlush = 2000;
     private const uint IdMask = CanFrame.IdentifierMask;
+    // A gauge is "stale" once its CAN ID hasn't been seen for this long (blanked only if opted in).
+    private const long StaleGaugeMs = 1500;
 
     private ICanAdapter _bus;
     private CanAdapterKind _busKind = CanAdapterKind.IxxatVci;
@@ -64,8 +66,45 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private DbcMessageInfo? _selectedDbcMessage;
     private DbcSignalInfo? _selectedDbcSignal;
     private int _cyclicHandle = -1;
-    // Cyclic handles for a multi-signal TX list (one per distinct CAN ID).
-    private readonly List<int> _txListHandles = [];
+    // Which source is driving the active repeat, so a live value edit only pushes to the
+    // matching stream (see UpdateRepeat* below).
+    private RepeatKind _repeatKind = RepeatKind.None;
+    // The signal captured when a single DBC-signal repeat started, so live value edits
+    // re-encode against the same frame even if the picker selection changes.
+    private DbcSignalInfo? _repeatDbcSignal;
+    // Active multi-signal TX streams: one per distinct CAN ID, with the entries that feed it
+    // so a live value edit can re-pack and update just that frame.
+    private readonly List<CyclicTxGroup> _txGroups = [];
+    // Groups that contain a rolling counter: driven by our own timer (each tick increments the
+    // counter and re-sends) since a fixed-payload cyclic stream can't advance a counter. The
+    // reference is swapped (never mutated) so the timer thread can iterate it lock-free.
+    private volatile List<RollingTxGroup> _rollingGroups = [];
+    private System.Threading.Timer? _rollTimer;
+
+    private enum RepeatKind { None, Raw, DbcSignal, TxList }
+
+    /// <summary>One running cyclic TX stream: its packed message, the source entries, and the adapter handle.</summary>
+    private sealed record CyclicTxGroup(DbcMessageInfo Message, List<TxSignalEntry> Entries, int Handle);
+
+    /// <summary>A TX group carrying ≥1 rolling counter; sent by <see cref="RollTick"/> each period.</summary>
+    private sealed record RollingTxGroup(DbcMessageInfo Message, List<TxSignalEntry> Entries, List<RollingState> Rollers);
+
+    /// <summary>Rolling-counter position for one entry: counts Min→Max (step = DBC factor) then wraps.</summary>
+    private sealed class RollingState
+    {
+        public required TxSignalEntry Entry;
+        public double Current;
+        public double Min;
+        public double Max;
+        public double Step;
+
+        public void Advance()
+        {
+            Current += Step;
+            if (Current > Max + Step * 0.5)
+                Current = Min;
+        }
+    }
 
     // ---- Log playback ----
     private IReadOnlyList<CanFrame> _logFrames = [];
@@ -87,10 +126,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     // cadence regardless of bus load.
     private readonly ConcurrentDictionary<uint, CanFrame> _latestFrame = new();
 
-    // ---- RX ID filter ----
-    // Compiled acceptance filter for the trace grid, read on the RX/playback thread and
-    // swapped (never mutated) on the UI thread, so a single volatile ref is enough. Null =
-    // pass everything. Filtering is display-only: logging and gauges still see every frame.
+    // Arrival time (Environment.TickCount64) of the latest frame per CAN ID, so the flush tick
+    // can tell when a message has stopped arriving and blank its gauges (opt-in, see ClearStaleGauges).
+    private readonly ConcurrentDictionary<uint, long> _lastSeenTick = new();
+    private bool _clearStaleGauges;
+
+    // ---- CAN ID filter ----
+    // Compiled acceptance filter, read on the RX/playback thread and swapped (never mutated)
+    // on the UI thread, so a single volatile ref is enough. Null = pass everything. It trims
+    // the trace grid and gates log replay (filtered IDs aren't transmitted/broadcast); logging
+    // and the live gauges still see every frame.
     private string _filterText = "";
     private bool _filterEnabled;
     private bool _filterExclude;
@@ -199,6 +244,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         get => _autoScroll;
         set => Set(ref _autoScroll, value);
+    }
+
+    /// <summary>
+    /// When on, a gauge is blanked to "no data" once its message stops arriving
+    /// (<see cref="StaleGaugeMs"/>) instead of holding the last received value. Off by default.
+    /// </summary>
+    public bool ClearStaleGauges
+    {
+        get => _clearStaleGauges;
+        set => Set(ref _clearStaleGauges, value);
     }
 
     // ---- RX ID filter ----
@@ -522,7 +577,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             uint id = Convert.ToUInt32(idText.Trim().Replace("0x", "", StringComparison.OrdinalIgnoreCase), 16);
             byte[] data = ParseHexBytes(dataText);
-            StartCyclic(id, extended, data, remote, intervalMs, idText.Trim());
+            StartCyclic(id, extended, data, remote, intervalMs, idText.Trim(), RepeatKind.Raw);
         }
         catch (Exception ex)
         {
@@ -542,11 +597,68 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             byte[] data = SelectedDbcSignal.Encode(value);
             StartCyclic(SelectedDbcMessage.Id, SelectedDbcMessage.Extended, data, remote: false, intervalMs,
-                SelectedDbcSignal.Name);
+                SelectedDbcSignal.Name, RepeatKind.DbcSignal);
+            // Pin the signal so live value edits re-encode against it even if the picker moves.
+            _repeatDbcSignal = SelectedDbcSignal;
         }
         catch (Exception ex)
         {
             Status = "Repeat failed: " + ex.Message;
+        }
+    }
+
+    // ---- Live value updates while repeating (no stop/start) ----
+
+    /// <summary>Push edited raw payload bytes to the running raw stream. Ignored otherwise.</summary>
+    public void UpdateRepeatRaw(string dataText)
+    {
+        if (_repeatKind != RepeatKind.Raw || _cyclicHandle < 0)
+            return;
+        try
+        {
+            _bus.UpdateCyclic(_cyclicHandle, ParseHexBytes(dataText));
+        }
+        catch
+        {
+            // Half-typed/invalid hex: keep sending the last good payload.
+        }
+    }
+
+    /// <summary>Re-encode the edited value into the running DBC-signal stream. Ignored otherwise.</summary>
+    public void UpdateRepeatDbcValue(string valueText)
+    {
+        if (_repeatKind != RepeatKind.DbcSignal || _cyclicHandle < 0 || _repeatDbcSignal is null)
+            return;
+        if (!double.TryParse(valueText, NumberStyles.Any, CultureInfo.InvariantCulture, out double value))
+            return;
+        try
+        {
+            _bus.UpdateCyclic(_cyclicHandle, _repeatDbcSignal.Encode(value));
+        }
+        catch
+        {
+            // Out-of-range/encode error: keep sending the last good payload.
+        }
+    }
+
+    /// <summary>Re-pack a TX-list entry's group and update just that frame when its value changes.</summary>
+    private void OnTxEntryChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (_repeatKind != RepeatKind.TxList || e.PropertyName != nameof(TxSignalEntry.Value))
+            return;
+        if (sender is not TxSignalEntry entry)
+            return;
+        var group = _txGroups.FirstOrDefault(g => g.Entries.Contains(entry));
+        if (group is null)
+            return;
+        try
+        {
+            byte[] data = group.Message.EncodeSignals(group.Entries.Select(en => (en.Signal, en.Value)));
+            _bus.UpdateCyclic(group.Handle, data);
+        }
+        catch
+        {
+            // Keep sending the last good frame if this value doesn't encode.
         }
     }
 
@@ -600,7 +712,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    /// <summary>Cyclically transmit the whole TX list — one cyclic stream per distinct CAN ID.</summary>
+    /// <summary>Cyclically transmit the whole TX list — one stream per distinct CAN ID.</summary>
     public void StartRepeatTxList(int intervalMs)
     {
         try
@@ -610,19 +722,96 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             StopRepeat();
             int ms = Math.Max(1, intervalMs);
-            int frames = 0;
-            foreach (var (msg, data) in BuildTxFrames())
+            var rolling = new List<RollingTxGroup>();
+            int rollerCount = 0;
+
+            // Group by CAN ID. A group with a rolling counter can't ride a fixed-payload cyclic
+            // stream, so it's driven by RollTick instead; the rest use the adapter's scheduler.
+            foreach (var group in TxList.GroupBy(e => (e.Message.Id, e.Message.Extended)))
             {
-                _txListHandles.Add(_bus.StartCyclic(msg.Id, msg.Extended, data, remote: false, ms));
-                frames++;
+                var entries = group.ToList();
+                var msg = entries[0].Message;
+                var rollers = entries
+                    .Where(e => e.IsRolling)
+                    .Select(MakeRollingState)
+                    .ToList();
+
+                if (rollers.Count == 0)
+                {
+                    byte[] data = msg.EncodeSignals(entries.Select(e => (e.Signal, e.Value)));
+                    int handle = _bus.StartCyclic(msg.Id, msg.Extended, data, remote: false, ms);
+                    _txGroups.Add(new CyclicTxGroup(msg, entries, handle));
+                }
+                else
+                {
+                    rolling.Add(new RollingTxGroup(msg, entries, rollers));
+                    rollerCount += rollers.Count;
+                }
             }
+
+            _rollingGroups = rolling;
+            foreach (var entry in TxList)
+                entry.PropertyChanged += OnTxEntryChanged;
+            _repeatKind = RepeatKind.TxList;
             IsRepeating = true;
+
+            if (rolling.Count > 0)
+                _rollTimer = new System.Threading.Timer(_ => RollTick(), null, 0, ms);
+
+            int total = _txGroups.Count + rolling.Count;
             string mode = _bus.SupportsScheduler ? "hardware" : "software timer";
-            Status = $"Cyclic TX list: {frames} frame(s) every {ms} ms ({mode}).";
+            string roll = rollerCount > 0 ? $", {rollerCount} rolling counter(s)" : "";
+            Status = $"Cyclic TX list: {total} frame(s) every {ms} ms ({mode}{roll}).";
         }
         catch (Exception ex)
         {
             Status = "TX list repeat failed: " + ex.Message;
+        }
+    }
+
+    /// <summary>Seed a rolling counter from its DBC range: count Min→Max, step = factor, wrap.</summary>
+    private static RollingState MakeRollingState(TxSignalEntry entry)
+    {
+        var sig = entry.Signal;
+        double step = sig.Factor > 0 ? sig.Factor : 1;
+        double min = sig.Minimum;
+        double max = sig.Maximum;
+        if (max <= min) // no usable DBC range — fall back to the signal's bit width
+            max = min + ((1L << Math.Clamp(sig.Length, 1, 31)) - 1) * step;
+        return new RollingState { Entry = entry, Min = min, Max = max, Step = step, Current = min };
+    }
+
+    /// <summary>
+    /// Timer tick for rolling groups: pack each group's frame with the counters at their current
+    /// value (other signals read live from the list), send it, then advance every counter.
+    /// </summary>
+    private void RollTick()
+    {
+        var groups = _rollingGroups; // snapshot; StopRepeat swaps in a new list, never mutates
+        try
+        {
+            foreach (var g in groups)
+            {
+                var values = g.Entries.Select(e =>
+                {
+                    var roller = g.Rollers.FirstOrDefault(r => ReferenceEquals(r.Entry, e));
+                    return (e.Signal, roller?.Current ?? e.Value);
+                });
+                byte[] data = g.Message.EncodeSignals(values);
+                _bus.Send(g.Message.Id, g.Message.Extended, data, remote: false);
+
+                foreach (var r in g.Rollers)
+                    r.Advance();
+            }
+        }
+        catch (Exception ex)
+        {
+            // Bus dropped/disconnected mid-roll: stop and report once (marshalled to the UI).
+            SetOnUi(() =>
+            {
+                StopRepeat();
+                Status = "Rolling TX stopped: " + ex.Message;
+            });
         }
     }
 
@@ -652,10 +841,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         return frames;
     }
 
-    private void StartCyclic(uint id, bool extended, byte[] data, bool remote, int intervalMs, string label)
+    private void StartCyclic(uint id, bool extended, byte[] data, bool remote, int intervalMs, string label,
+        RepeatKind kind)
     {
         StopRepeat();
         _cyclicHandle = _bus.StartCyclic(id, extended, data, remote, Math.Max(1, intervalMs));
+        _repeatKind = kind;
         IsRepeating = true;
         string mode = _bus.SupportsScheduler ? "hardware" : "software timer";
         Status = $"Cyclic {label} every {intervalMs} ms ({mode}).";
@@ -668,9 +859,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _bus.StopCyclic(_cyclicHandle);
             _cyclicHandle = -1;
         }
-        foreach (int handle in _txListHandles)
-            _bus.StopCyclic(handle);
-        _txListHandles.Clear();
+        foreach (var group in _txGroups)
+            _bus.StopCyclic(group.Handle);
+        _txGroups.Clear();
+        // Stop the rolling-counter driver: swap in an empty list (so an in-flight tick finishes
+        // on its old snapshot) before disposing the timer.
+        _rollingGroups = [];
+        _rollTimer?.Dispose();
+        _rollTimer = null;
+        foreach (var entry in TxList)
+            entry.PropertyChanged -= OnTxEntryChanged;
+        _repeatKind = RepeatKind.None;
+        _repeatDbcSignal = null;
         if (IsRepeating)
         {
             IsRepeating = false;
@@ -834,14 +1034,25 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     prevTs = frame.TimeStamp;
                     PlaybackTime = frame.TimeStamp;
 
+                    // The ID filter also gates replay: a filtered-out frame is not transmitted,
+                    // broadcast, or shown. Gauges still see every frame (like live RX).
+                    bool emit = PassesRxFilter(frame);
+
                     if (mode == PlaybackMode.ReplayOnBus)
+                    {
                         // The bus echoes self-received frames, so the grid updates via the RX path.
-                        _bus.Send(frame.Identifier, frame.IsExtended, frame.Data, frame.IsRemote);
+                        if (emit)
+                            _bus.Send(frame.Identifier, frame.IsExtended, frame.Data, frame.IsRemote);
+                        else
+                            // No echo will come back for a skipped frame; keep its gauge live.
+                            RecordLatest(frame);
+                    }
                     else if (mode == PlaybackMode.ReplayToTcp)
                     {
                         // No self-echo over TCP, so mirror the frame into the grid ourselves.
-                        _tcp.Broadcast(RawCanWire.Encode(frame));
-                        EnqueueForDisplay(frame);
+                        if (emit)
+                            _tcp.Broadcast(RawCanWire.Encode(frame));
+                        EnqueueForDisplay(frame); // updates gauges always; grid honours the filter
                     }
                     else
                         EnqueueForDisplay(frame);
@@ -927,7 +1138,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             foreach (var s in _dbc.DecodeSignals(frame))
             {
-                string key = s.Message + " " + s.Signal;
+                string key = s.Message + " " + s.Signal;
                 if (!series.TryGetValue(key, out var entry))
                 {
                     entry = (s.Message, s.Signal, s.Unit, new List<double>(), new List<double>());
@@ -946,10 +1157,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    /// <summary>Record a frame as the latest for its ID and stamp its arrival time (gauge staleness).</summary>
+    private void RecordLatest(CanFrame frame)
+    {
+        uint id = frame.Identifier & IdMask;
+        _latestFrame[id] = frame;
+        _lastSeenTick[id] = Environment.TickCount64;
+    }
+
     /// <summary>Decode a frame and buffer it for the grid without writing it to the trace log.</summary>
     private void EnqueueForDisplay(CanFrame frame)
     {
-        _latestFrame[frame.Identifier & IdMask] = frame;
+        RecordLatest(frame);
         if (!PassesRxFilter(frame))
             return;
         // Pass the decoder, don't run it: the row decodes lazily only if it's rendered.
@@ -963,7 +1182,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         // Log and gauge-sample every frame; the filter only trims what the grid shows.
         _logger.Log(frame);
-        _latestFrame[frame.Identifier & IdMask] = frame;
+        RecordLatest(frame);
         if (!PassesRxFilter(frame))
             return;
         // Keep the RX thread cheap: log + buffer only. Decoding is deferred to the row,
@@ -993,13 +1212,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _rxFilter = filter;
         if (filter is null)
         {
-            Status = "RX filter on, but no valid IDs entered — showing all frames.";
+            Status = "ID filter on, but no valid IDs entered — showing all frames.";
             return;
         }
 
         Status = filter.Exclude
-            ? $"RX filter: hiding {filter.Count} ID(s)/range(s)."
-            : $"RX filter: showing only {filter.Count} ID(s)/range(s).";
+            ? $"ID filter: hiding {filter.Count} ID(s)/range(s)."
+            : $"ID filter: showing only {filter.Count} ID(s)/range(s).";
     }
 
     /// <summary>Drain buffered frames onto the UI collection (runs on the UI thread).</summary>
@@ -1040,10 +1259,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private void BuildCanIdGroups()
     {
         foreach (var g in CanIdGroups)
+        {
             g.PropertyChanged -= OnGroupEnabledChanged;
+            foreach (var sig in g.Signals)
+                sig.SelectionChanged -= RebuildGauges;
+        }
         CanIdGroups.Clear();
         Gauges.Clear();
         _latestFrame.Clear();
+        _lastSeenTick.Clear();
         if (_dbc is null)
             return;
 
@@ -1055,6 +1279,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var signals = msg.Signals
                 .Select(s => new LiveSignal(msg.Name, s.Name, s.Unit, s.Minimum, s.Maximum))
                 .ToList();
+            // Deselecting a single signal re-flattens the gauge list for its (enabled) ID.
+            foreach (var sig in signals)
+                sig.SelectionChanged += RebuildGauges;
 
             string idText = msg.Extended ? $"0x{msg.Id:X8}x" : $"0x{msg.Id:X3}";
             var group = new LiveMessageGroup(msg.Id, idText, msg.Name, signals);
@@ -1069,7 +1296,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             RebuildGauges();
     }
 
-    /// <summary>Flatten the signals of every enabled CAN ID into the gauge list.</summary>
+    /// <summary>Flatten the selected signals of every enabled CAN ID into the gauge list.</summary>
     private void RebuildGauges()
     {
         Gauges.Clear();
@@ -1078,7 +1305,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             if (!group.IsEnabled)
                 continue;
             foreach (var sig in group.Signals)
-                Gauges.Add(sig);
+                if (sig.IsSelected)
+                    Gauges.Add(sig);
         }
     }
 
@@ -1088,10 +1316,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         if (Gauges.Count == 0 || _dbc is null)
             return;
 
+        long now = Environment.TickCount64;
         foreach (var group in CanIdGroups)
         {
             if (!group.IsEnabled || !_latestFrame.TryGetValue(group.Id, out var frame))
                 continue;
+
+            // Opted in: once the message stops arriving, blank the gauges instead of
+            // holding the last value. Reset() is a no-op after the first stale tick.
+            if (_clearStaleGauges
+                && _lastSeenTick.TryGetValue(group.Id, out long seen)
+                && now - seen > StaleGaugeMs)
+            {
+                foreach (var sig in group.Signals)
+                    sig.Reset();
+                continue;
+            }
 
             var decoded = _dbc.DecodeSignals(frame);
             if (decoded.Count == 0)
