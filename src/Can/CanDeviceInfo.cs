@@ -8,7 +8,9 @@ public enum CanAdapterKind
     /// <summary>OBDX Pro scantool (USB / WiFi / BLE) over the DVI protocol.</summary>
     Obdx,
     /// <summary>Any SAE J2534-1 (v04.04) PassThru device via its installed vendor DLL.</summary>
-    J2534
+    J2534,
+    /// <summary>GVRET / ESP32RET device (SavvyCAN-compatible) over the GVRET binary protocol (USB / WiFi).</summary>
+    Gvret
 }
 
 /// <summary>

@@ -1,15 +1,17 @@
 # Ultimate CAN Scanner
 
-A Windows WPF (.NET 8) CAN-bus tool with Ixxat, OBDX and J2534 backends. Three adapter
+A Windows WPF (.NET 8) CAN-bus tool with Ixxat, OBDX, J2534 and GVRET backends. Four adapter
 backends are selectable at runtime
 (**Adapter** picker on the connection bar): the **Ixxat VCI4 .NET API** for HMS Ixxat
-USB-to-CAN V2 adapters, the **OBDX Pro** scantool over its DVI protocol, and any
-**SAE J2534** PassThru device via its installed vendor DLL.
+USB-to-CAN V2 adapters, the **OBDX Pro** scantool over its DVI protocol, any
+**SAE J2534** PassThru device via its installed vendor DLL, and any **GVRET / ESP32RET**
+device (the firmware SavvyCAN talks to) over USB serial or WiFi.
 
 ## Features
 
 - **Pluggable adapters** behind one `ICanAdapter` interface: Ixxat VCI4, OBDX Pro
-  over USB virtual-COM / WiFi TCP / BLE, or a generic **J2534** PassThru tool. Pick the
+  over USB virtual-COM / WiFi TCP / BLE, a generic **J2534** PassThru tool, or a
+  **GVRET / ESP32RET** device (SavvyCAN-compatible) over USB serial / WiFi TCP. Pick the
   backend, then the device.
 - Enumerate and connect to any installed VCI device (USB-to-CAN V2, etc.)
 - Selectable bit rate (10 kbit … 1 Mbit) and listen-only mode
@@ -75,6 +77,9 @@ dotnet run --project src\IxxatCanTool.csproj -c Release
 | `src/Can/J2534/J2534Native.cs` | SAE J2534 v04.04 constants, `PASSTHRU_MSG` layout, and the vendor-DLL loader (`J2534Library`). |
 | `src/Can/J2534/J2534Registry.cs` | Enumerate installed J2534 drivers from `HKLM\SOFTWARE\PassThruSupport.04.04` (64- and 32-bit views). |
 | `src/Can/J2534/J2534CanAdapter.cs` | J2534 backend: load DLL, raw-CAN connect, pass-all filters, RX pump, TX, software-timer cyclic. |
+| `src/Can/Gvret/GvretProtocol.cs` | GVRET binary wire protocol: SETUP_CANBUS / BUILD_CAN_FRAME encoders + the inbound-stream frame parser (pure, tested). |
+| `src/Can/Gvret/GvretTransports.cs` | GVRET byte links: USB virtual-COM (`SerialPort`) and WiFi (`TcpClient`). |
+| `src/Can/Gvret/GvretCanAdapter.cs` | GVRET/ESP32RET backend: binary-mode handshake, KEEPALIVE probe, CAN0 setup, RX pump, TX, software-timer cyclic. |
 | `src/Can/CanDeviceInfo.cs` | Adapter-agnostic device descriptor (`Adapter` + opaque `Key`). |
 | `src/Can/CanFrame.cs` | Driver-agnostic frame model. |
 | `src/Can/CanIdFilter.cs` | Immutable RX trace filter: parse hex IDs/ranges + include/exclude membership test. |
@@ -113,6 +118,19 @@ dotnet run --project src\IxxatCanTool.csproj -c Release
   drivers are still *listed* (so you see the device) but marked unusable and raise a clear
   error on connect. SAE J2534-1 has **no standard listen-only** CAN mode, so ticking
   Listen-only connects in normal mode and reports that in the status bar (the tool will ACK).
+- **GVRET backend** (`src/Can/Gvret/`) drives any **GVRET / ESP32RET** device — the
+  open-source firmware SavvyCAN speaks to — over the GVRET **binary serial protocol**, across
+  USB serial or WiFi TCP (ESP32RET SoftAP default `192.168.4.1:23`). On connect it sends
+  `0xE7 0xE7` to switch the device from its text/LAWICEL console into binary mode, probes with a
+  `KEEPALIVE` (fails Connect if nothing replies), then enables **CAN0** at the selected rate via
+  `SETUP_CANBUS` (speed packed with the valid/enabled/listen-only flag bits, CAN1 left off). A
+  background thread feeds the inbound stream to `GvretFrameParser`, a resilient state machine that
+  stays byte-aligned by knowing every reply's length (frames are variable via their length nibble;
+  KEEPALIVE/TIME_SYNC/params/numbuses are fixed) and resynchronises on an unknown marker. Frames
+  arrive as command `0x00` (micros timestamp, ID with bit 31 = extended, `len|bus` byte, data);
+  TX uses `BUILD_CAN_FRAME` and is mirrored into the trace (no self-reception), and cyclic TX uses
+  a software timer, so `SupportsScheduler = false`. The wire encoders and parser are unit-tested
+  against the collin80/GVRET + SavvyCAN reference; RTR transmit isn't supported by the protocol.
 - **OBDX Pro backend** speaks the DVI byte protocol (`ObdxDvi`, verified against the
   manual's worked hex). On connect it does the ELM→DVI handshake (`ATE0`, `DXDP1`), then
   puts the tool in **raw** mode for reverse-engineering: monitor-all (clear filters),

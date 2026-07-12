@@ -2,8 +2,10 @@
 
 > WPF/.NET 8 CAN tool: live RX trace, DBC + J1939 decode, frame/signal TX, multi-signal
 > TX list, log playback (offline / onto the bus / over TCP), ScottPlot graph, live gauges.
-> Two runtime-selectable adapter backends behind `ICanAdapter`: **Ixxat VCI4**
-> (`CanBusService`) and **OBDX Pro** (`src/Can/Obdx/`, DVI protocol; USB / WiFi / BLE).
+> Four runtime-selectable adapter backends behind `ICanAdapter`: **Ixxat VCI4**
+> (`CanBusService`), **OBDX Pro** (`src/Can/Obdx/`, DVI protocol; USB / WiFi / BLE),
+> **J2534** (`src/Can/J2534/`, PassThru DLL), and **GVRET / ESP32RET**
+> (`src/Can/Gvret/`, GVRET binary protocol; USB serial / WiFi TCP).
 > Project specifics live in `README.md`.
 
 **Shared CAN reference:** the global `~/.claude/CLAUDE.md` holds the cross-project CAN
