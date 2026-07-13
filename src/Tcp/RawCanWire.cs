@@ -31,4 +31,27 @@ public static class RawCanWire
         Array.Copy(f.Data, 0, w, 5, dlc);
         return w;
     }
+
+    /// <summary>
+    /// Unpack one 13-byte wire buffer into an inbound (<see cref="CanDirection.Rx"/>) frame.
+    /// <paramref name="wire"/> must be exactly <see cref="FrameSize"/> bytes.
+    /// </summary>
+    public static CanFrame Decode(ReadOnlySpan<byte> wire)
+    {
+        if (wire.Length != FrameSize)
+            throw new ArgumentException($"RawCanWire frame must be {FrameSize} bytes.", nameof(wire));
+
+        int dlc = wire[0] & 0x0F;
+        if (dlc > 8) dlc = 8;
+        bool extended = (wire[0] & 0x80) != 0;
+        uint id = ((uint)wire[1] << 24) | ((uint)wire[2] << 16) | ((uint)wire[3] << 8) | wire[4];
+
+        return new CanFrame
+        {
+            Direction = CanDirection.Rx,
+            Identifier = id & CanFrame.IdentifierMask,
+            IsExtended = extended,
+            Data = wire.Slice(5, dlc).ToArray()
+        };
+    }
 }

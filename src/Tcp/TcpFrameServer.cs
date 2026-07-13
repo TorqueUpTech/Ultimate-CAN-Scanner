@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using IxxatCanTool.Can;
 
 namespace IxxatCanTool.Tcp;
 
@@ -7,9 +8,13 @@ namespace IxxatCanTool.Tcp;
 /// Serves CAN frames over TCP in the 13-byte <see cref="RawCanWire"/> format on a
 /// loopback port, so a replayed log can feed the Can-Display dash sim with no
 /// adapter (mirrors the CAN-Replay tool's server). Tracks connected clients and
-/// broadcasts each frame to all of them; a per-client drain task discards inbound
-/// bytes so a client's send buffer can't back up and stall the broadcaster. The
-/// playback loop is the only writer, so broadcasts never race each other.
+/// broadcasts each frame to all of them; the playback loop is the only writer, so
+/// broadcasts never race each other.
+///
+/// The link is bidirectional: a per-client reader re-assembles inbound 13-byte
+/// RawCanWire frames and raises <see cref="FrameReceived"/> for each, so a client
+/// can push traffic into the tool (surfaced as RX). Reading continuously also keeps
+/// a client's send buffer from backing up and stalling the broadcaster.
 /// </summary>
 public sealed class TcpFrameServer : IDisposable
 {
@@ -18,6 +23,9 @@ public sealed class TcpFrameServer : IDisposable
 
     /// <summary>Human-readable status lines (may fire on background threads).</summary>
     public event Action<string>? Log;
+
+    /// <summary>Raised per inbound RawCanWire frame from any client (fires on background threads).</summary>
+    public event Action<CanFrame>? FrameReceived;
 
     public bool Running { get; private set; }
     public string BindAddress { get; private set; } = DefaultBindAddress;
@@ -94,7 +102,7 @@ public sealed class TcpFrameServer : IDisposable
         client.NoDelay = true;                 // single-frame latency, like the real server
         lock (_lock) _clients.Add(client);
         Log?.Invoke($"client connected ({Describe(client)}); {ClientCount} attached.");
-        _ = DrainAsync(client);                // fire-and-forget reader
+        _ = ReceiveAsync(client);              // fire-and-forget reader (RX + keeps buffer drained)
     }
 
     private void CloseAll()
@@ -107,14 +115,29 @@ public sealed class TcpFrameServer : IDisposable
         }
     }
 
-    // Read and discard inbound bytes so the client never blocks on a full buffer.
-    private async Task DrainAsync(TcpClient client)
+    // Read inbound bytes, re-assemble fixed 13-byte RawCanWire frames across reads, and republish
+    // each as RX. Continuous reading also stops the client's send buffer backing up (broadcaster
+    // stall). The format is unframed, so byte alignment relies on the client sending whole frames.
+    private async Task ReceiveAsync(TcpClient client)
     {
-        var buf = new byte[512];
+        var buf = new byte[4096];
+        var frame = new byte[RawCanWire.FrameSize];
+        int have = 0;
         try
         {
             var stream = client.GetStream();
-            while (await stream.ReadAsync(buf).ConfigureAwait(false) > 0) { /* discard */ }
+            int n;
+            while ((n = await stream.ReadAsync(buf).ConfigureAwait(false)) > 0)
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    frame[have++] = buf[i];
+                    if (have < RawCanWire.FrameSize)
+                        continue;
+                    have = 0;
+                    FrameReceived?.Invoke(RawCanWire.Decode(frame));
+                }
+            }
         }
         catch { /* falls through to removal */ }
 

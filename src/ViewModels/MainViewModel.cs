@@ -61,6 +61,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private bool _isRepeating;
     private string _status = "Idle";
     private string _tcpStatus = "TCP: off";
+    private int _tcpPort = TcpFrameServer.DefaultPort;
     private string _dbcFileName = "(no DBC loaded)";
     private DbcDecoder? _dbc;
     private DbcMessageInfo? _selectedDbcMessage;
@@ -147,6 +148,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _bus = CanAdapters.Create(_busKind);
         AttachBus(_bus);
         _tcp.Log += msg => _dispatcher.BeginInvoke(() => Status = msg);
+        // Inbound TCP frames flow through the same RX path as an adapter (grid, gauges, log).
+        _tcp.FrameReceived += OnFrameReceived;
 
         _flushTimer = new DispatcherTimer(
             TimeSpan.FromMilliseconds(50),
@@ -333,6 +336,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public bool IsTcpServerRunning => _tcp.Running;
 
+    /// <summary>
+    /// Port the RawCanWire server binds to; editable so several app instances can each serve a
+    /// different client on its own port. Takes effect the next time the server starts.
+    /// </summary>
+    public int TcpPort
+    {
+        get => _tcpPort;
+        set => Set(ref _tcpPort, value);
+    }
+
     /// <summary>Polled by the UI flush tick: bind address + attached client count, or "off".</summary>
     public string TcpStatus
     {
@@ -340,7 +353,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         private set => Set(ref _tcpStatus, value);
     }
 
-    /// <summary>Start/stop the RawCanWire TCP broadcast server (feeds the Can-Display dash sim).</summary>
+    /// <summary>Start/stop the RawCanWire TCP broadcast server on <see cref="TcpPort"/>.</summary>
     public void ToggleTcpServer()
     {
         try
@@ -348,7 +361,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             if (_tcp.Running)
                 _tcp.Stop();
             else
-                _tcp.Start();
+                _tcp.Start(TcpFrameServer.DefaultBindAddress, TcpPort);
         }
         catch (Exception ex)
         {
@@ -965,7 +978,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // connected dash sim isn't dropped between passes (Stop only the playback).
             try
             {
-                _tcp.Start();
+                _tcp.Start(TcpFrameServer.DefaultBindAddress, TcpPort);
                 OnPropertyChanged(nameof(IsTcpServerRunning));
             }
             catch (Exception ex)
