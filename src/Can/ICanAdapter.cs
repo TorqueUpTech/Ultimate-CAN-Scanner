@@ -18,6 +18,22 @@ public interface ICanAdapter : IDisposable
     /// <summary>True when cyclic frames transmit without a software timer (hardware scheduler).</summary>
     bool SupportsScheduler { get; }
 
+    /// <summary>
+    /// True when this backend can push an ID filter into the device itself, so non-matching frames
+    /// are dropped at the tool and never cross the link. Unlike the trace-view <see cref="CanIdFilter"/>,
+    /// that saves bandwidth (the point on WiFi/BLE) but the frames are genuinely gone — they reach
+    /// neither the grid nor the CSV log.
+    /// </summary>
+    bool SupportsDeviceFilter => false;
+
+    /// <summary>
+    /// Push <paramref name="filter"/> into the device; null clears it (pass everything). Safe to call
+    /// before <see cref="Connect"/> (applied during init, so no unfiltered burst) or while connected
+    /// (pushed live). Returns what actually happened, so a filter the hardware cannot express degrades
+    /// to a reported fallback rather than silently doing nothing.
+    /// </summary>
+    DeviceFilterResult SetDeviceFilter(CanIdFilter? filter) => DeviceFilterResult.Unsupported;
+
     /// <summary>Open <paramref name="device"/> at the given bit rate and start receiving.</summary>
     void Connect(CanDeviceInfo device, CanBitRate bitRate, bool listenOnly = false);
 

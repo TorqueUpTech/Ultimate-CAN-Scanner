@@ -18,6 +18,13 @@ public sealed class CanIdFilter
     /// <summary>Number of parsed ID ranges (a bare ID counts as one).</summary>
     public int Count => _ranges.Length;
 
+    /// <summary>
+    /// The parsed inclusive [Lo,Hi] ID ranges, in input order. Exposed so a backend can translate
+    /// them into hardware acceptance filters (see <c>ObdxDeviceFilter</c>) instead of only
+    /// filtering after the fact. Never mutated after construction.
+    /// </summary>
+    public IReadOnlyList<(uint Lo, uint Hi)> Ranges => _ranges;
+
     private CanIdFilter((uint Lo, uint Hi)[] ranges, bool exclude)
     {
         _ranges = ranges;

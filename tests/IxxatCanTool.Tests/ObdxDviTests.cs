@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using System.Linq;
+using IxxatCanTool.Can;
 using IxxatCanTool.Can.Obdx;
 using Xunit;
 
@@ -89,6 +91,104 @@ public class ObdxDviTests
         Assert.Contains(seq, c => c.AsSpan().SequenceEqual(ObdxDvi.SetAutoProcessing(false)));
         Assert.Contains(seq, c => c.AsSpan().SequenceEqual(ObdxDvi.SetAutoFormatting(false)));
         Assert.True(seq[^1].AsSpan().SequenceEqual(ObdxDvi.SetComms(ObdxDvi.CommsOn))); // enable is last
+    }
+
+    // ---- Device-level ID filter translation (ObdxDeviceFilter) ----
+
+    /// <summary>Pull the (id, mask) pair back out of a 0x34/0x00 "entire filter" command.</summary>
+    private static (uint Id, uint Mask, bool Extended) DecodeFilter(byte[] cmd)
+    {
+        uint Be32(int at) => (uint)(cmd[at] << 24 | cmd[at + 1] << 16 | cmd[at + 2] << 8 | cmd[at + 3]);
+        return (Be32(7), Be32(11), cmd[4] == 0x01);
+    }
+
+    [Fact]
+    public void DeviceFilter_maps_single_id_to_one_exact_slot()
+    {
+        var filter = CanIdFilter.Parse("1E1", exclude: false)!;
+        Assert.True(ObdxDeviceFilter.TryPlan(filter, out var cmds, out _));
+
+        byte[] only = Assert.Single(cmds);
+        Assert.Equal((0x1E1u, 0x7FFu, false), DecodeFilter(only)); // every bit must match
+    }
+
+    [Fact]
+    public void DeviceFilter_maps_aligned_range_to_one_slot()
+    {
+        // 700-7FF is a naturally aligned 256-wide block: id 0x700, mask 0x700 (low 8 bits don't care).
+        var filter = CanIdFilter.Parse("700-7FF", exclude: false)!;
+        Assert.True(ObdxDeviceFilter.TryPlan(filter, out var cmds, out _));
+
+        byte[] only = Assert.Single(cmds);
+        Assert.Equal((0x700u, 0x700u, false), DecodeFilter(only));
+    }
+
+    [Theory]
+    [InlineData("0C9 1E1 1ED", 3)]
+    [InlineData("700-7FF", 1)]
+    [InlineData("100-101", 1)]   // aligned pair collapses to one block
+    [InlineData("100-102", 2)]   // 100-101 + 102
+    public void DeviceFilter_uses_expected_slot_count(string text, int expected)
+    {
+        var filter = CanIdFilter.Parse(text, exclude: false)!;
+        Assert.True(ObdxDeviceFilter.TryPlan(filter, out var cmds, out _));
+        Assert.Equal(expected, cmds.Count);
+    }
+
+    [Fact]
+    public void DeviceFilter_blocks_decompose_to_cover_exactly_the_requested_ids()
+    {
+        // An awkward range must pass every ID inside it and nothing outside it.
+        var filter = CanIdFilter.Parse("123-456", exclude: false)!;
+        Assert.True(ObdxDeviceFilter.TryPlan(filter, out var cmds, out _));
+
+        var blocks = cmds.Select(DecodeFilter).ToList();
+        bool Accepts(uint id) => blocks.Any(b => (id & b.Mask) == (b.Id & b.Mask));
+        for (uint id = 0x120; id <= 0x460; id++)
+            Assert.Equal(id >= 0x123 && id <= 0x456, Accepts(id));
+    }
+
+    [Fact]
+    public void DeviceFilter_splits_a_range_straddling_the_11_and_29_bit_boundary()
+    {
+        var filter = CanIdFilter.Parse("7F0-810", exclude: false)!;
+        Assert.True(ObdxDeviceFilter.TryPlan(filter, out var cmds, out _));
+
+        var blocks = cmds.Select(DecodeFilter).ToList();
+        Assert.Contains(blocks, b => !b.Extended); // 7F0-7FF went to the 11-bit pool
+        Assert.Contains(blocks, b => b.Extended);  // 800-810 went to the 29-bit pool
+    }
+
+    [Fact]
+    public void DeviceFilter_rejects_blocklist_so_caller_falls_back_to_app_side()
+    {
+        var filter = CanIdFilter.Parse("0C9", exclude: true)!;
+        Assert.False(ObdxDeviceFilter.TryPlan(filter, out _, out string message));
+        Assert.Contains("allowlist", message);
+        Assert.Contains("RX ID filter", message); // point the user at the tool that does do blocklists
+    }
+
+    [Fact]
+    public void DeviceFilter_rejects_a_plan_that_outruns_the_slots()
+    {
+        // 29 discrete 11-bit IDs need 29 slots; the device has 28.
+        string text = string.Join(' ', Enumerable.Range(0x100, 29).Select(i => i.ToString("X3")));
+        var filter = CanIdFilter.Parse(text, exclude: false)!;
+
+        Assert.False(ObdxDeviceFilter.TryPlan(filter, out _, out string message));
+        Assert.Contains("passing every frame", message);
+    }
+
+    [Fact]
+    public void RawCanInit_uses_supplied_device_filters_instead_of_pass_all()
+    {
+        var filter = CanIdFilter.Parse("1E1", exclude: false)!;
+        Assert.True(ObdxDeviceFilter.TryPlan(filter, out var cmds, out _));
+
+        var seq = ObdxDvi.RawCanInit(0x06, listenOnly: false, cmds);
+        Assert.Contains(seq, c => c.AsSpan().SequenceEqual(cmds[0]));
+        Assert.DoesNotContain(seq, c => c.AsSpan().SequenceEqual(ObdxDvi.MonitorAllFilter(false, 0)));
+        Assert.True(seq[^1].AsSpan().SequenceEqual(ObdxDvi.SetComms(ObdxDvi.CommsOn))); // enable still last
     }
 
     [Fact]

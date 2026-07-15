@@ -143,14 +143,18 @@ public static class ObdxDvi
     /// enabled PASS filter (manual Note 2), so the two monitor-all filters are what make RX flow at all;
     /// without them the tool ACKs every config command but never delivers a frame. Send these (in order)
     /// after the ELM→DVI handshake, holding back the final comms-enable until the RX pump is running.
+    ///
+    /// <paramref name="filters"/> replaces the default pass-all pair, letting a device-level ID filter
+    /// take effect during init rather than after — so a narrow link never sees an unfiltered burst.
     /// </summary>
-    public static IReadOnlyList<byte[]> RawCanInit(byte baudCode, bool listenOnly) =>
+    public static IReadOnlyList<byte[]> RawCanInit(byte baudCode, bool listenOnly,
+                                                   IReadOnlyList<byte[]>? filters = null) =>
     [
         SetProtocol(ProtoHsCan),
         SetCanBaud(baudCode),
         ClearAllFilters(),
-        MonitorAllFilter(extended: false, number: 0), // pass every 11-bit ID (GM normal-mode broadcast)
-        MonitorAllFilter(extended: true, number: 1),   // pass every 29-bit ID (J1939 decode fallback)
+        // Default: pass every 11-bit ID (GM normal-mode broadcast) and every 29-bit ID (J1939 fallback).
+        .. filters ?? [MonitorAllFilter(extended: false, number: 0), MonitorAllFilter(extended: true, number: 1)],
         SetAutoProcessing(false),
         SetAutoFormatting(false),
         SetComms(listenOnly ? CommsListenOnly : CommsOn),

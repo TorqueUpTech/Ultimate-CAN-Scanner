@@ -26,6 +26,10 @@ public sealed class ObdxCanAdapter : ICanAdapter
     private Thread? _rxThread;
     private volatile bool _running;
 
+    // Device-level ID filter commands, or null for "pass everything". Set via SetDeviceFilter, which
+    // may be called before Connect (folded into the init sequence) or while connected (pushed live).
+    private IReadOnlyList<byte[]>? _filterCommands;
+
     public event Action<CanFrame>? FrameReceived;
     public event Action<string>? BusError;
 
@@ -34,6 +38,38 @@ public sealed class ObdxCanAdapter : ICanAdapter
     // The OBDX has 8 hardware periodic-frame slots; wiring those up is a future optimisation.
     // For now cyclic TX uses a software timer over the (proven) Send path.
     public bool SupportsScheduler => false;
+
+    // The tool filters in its own CAN controller on every transport. It matters most on BLE/WiFi,
+    // where the whole bus does not fit down the link, but it is offered everywhere.
+    public bool SupportsDeviceFilter => true;
+
+    /// <summary>
+    /// Translate <paramref name="filter"/> into hardware acceptance filters and apply them: folded into
+    /// the init sequence if not yet connected, pushed immediately if we are. A filter the device cannot
+    /// express (blocklist, or more mask blocks than slots) leaves it passing everything and says so,
+    /// rather than pretending to filter.
+    /// </summary>
+    public DeviceFilterResult SetDeviceFilter(CanIdFilter? filter)
+    {
+        IReadOnlyList<byte[]>? cmds = null;
+        string message = "Device filter off — the tool is passing every frame.";
+
+        if (filter is not null && ObdxDeviceFilter.TryPlan(filter, out IReadOnlyList<byte[]> planned, out message))
+            cmds = planned;
+
+        _filterCommands = cmds;
+        if (IsConnected)
+            PushFilters(cmds);
+        return new DeviceFilterResult(cmds is not null, message);
+    }
+
+    /// <summary>Re-arm the tool's filters on the fly: clear, then set the new set (or pass-all).</summary>
+    private void PushFilters(IReadOnlyList<byte[]>? filters)
+    {
+        WriteRaw(ObdxDvi.ClearAllFilters());
+        foreach (byte[] cmd in filters ?? ObdxDeviceFilter.PassAll())
+            WriteRaw(cmd);
+    }
 
     /// <summary>
     /// List the OBDX candidates: each USB serial port, the WiFi SoftAP (192.168.4.1:23), and a
@@ -69,7 +105,7 @@ public sealed class ObdxCanAdapter : ICanAdapter
             // Send the config commands first (protocol, baud, filters, raw-mode flags), then
             // confirm the tool didn't reject any before comms are enabled. The final command is
             // the comms-enable, held back until the RX pump is running so no frame is missed.
-            var seq = ObdxDvi.RawCanInit(baudCode, listenOnly);
+            var seq = ObdxDvi.RawCanInit(baudCode, listenOnly, _filterCommands);
             for (int i = 0; i < seq.Count - 1; i++)
                 WriteRaw(seq[i]);
             VerifyInit(expectedAcks: seq.Count - 1, timeoutMs: 500);

@@ -142,6 +142,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private bool _filterExclude;
     private volatile CanIdFilter? _rxFilter;
 
+    // Separate from the trace filter above: this one is pushed into the adapter's hardware, so
+    // non-matching frames never cross the link at all (and so never reach the grid, gauges or log).
+    private string _deviceFilterText = "";
+
     public MainViewModel(Dispatcher dispatcher)
     {
         _dispatcher = dispatcher;
@@ -189,8 +193,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         get => _selectedAdapterKind;
         set
         {
-            if (Set(ref _selectedAdapterKind, value))
-                RefreshDevices();
+            if (!Set(ref _selectedAdapterKind, value))
+                return;
+            // Swap the backend now (not just at Connect) so capability flags like
+            // DeviceFilterSupported describe the adapter actually being shown.
+            if (!IsConnected)
+                EnsureBusKind();
+            OnPropertyChanged(nameof(DeviceFilterSupported));
+            RefreshDevices();
         }
     }
 
@@ -288,6 +298,27 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         get => _filterExclude;
         set { if (Set(ref _filterExclude, value)) RebuildRxFilter(); }
     }
+
+    /// <summary>
+    /// CAN IDs (hex) the *device* should forward, e.g. "0C9 1E1" or "700-7FF" — same syntax as
+    /// <see cref="FilterText"/>, but allowlist only. Empty = the tool sends everything. Unlike the
+    /// trace filter this is not a view: excluded frames never leave the tool, so they cost no link
+    /// bandwidth (the point on WiFi/BLE) and appear in neither the grid nor the CSV log.
+    /// Applied on connect and re-pushed live whenever the box is committed.
+    /// </summary>
+    public string DeviceFilterText
+    {
+        get => _deviceFilterText;
+        set
+        {
+            if (!Set(ref _deviceFilterText, value) || !_bus.SupportsDeviceFilter)
+                return;
+            Status = ApplyDeviceFilter().Message;
+        }
+    }
+
+    /// <summary>True when the selected backend filters in hardware (OBDX); gates the device-filter box.</summary>
+    public bool DeviceFilterSupported => _bus.SupportsDeviceFilter;
 
     public string DbcFileName
     {
@@ -482,9 +513,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             EnsureBusKind(); // swap backend on the UI thread — it rewires events
             IsBusy = true;
             Status = $"Connecting to {device.Description}…";
+            // Hand the device filter over before connecting so it is part of the tool's init sequence:
+            // a narrow link never sees the unfiltered burst it would get if we applied it afterwards.
+            DeviceFilterResult deviceFilter = ApplyDeviceFilter();
             await Task.Run(() => _bus.Connect(device, bitRate, listenOnly));
             IsConnected = true;
-            Status = $"Connected @ {bitRate}{(listenOnly ? " (listen-only)" : "")}.";
+            bool filterRequested = !string.IsNullOrWhiteSpace(_deviceFilterText) && _bus.SupportsDeviceFilter;
+            Status = $"Connected @ {bitRate}{(listenOnly ? " (listen-only)" : "")}."
+                     + (filterRequested ? " " + deviceFilter.Message : "");
         }
         catch (Exception ex)
         {
@@ -1213,6 +1249,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     /// <summary>(Re)compile the filter from the current text/mode, or clear it when disabled/empty.</summary>
+    /// <summary>
+    /// Push <see cref="DeviceFilterText"/> into the adapter's hardware. Allowlist only — a device
+    /// filter exists to stop frames crossing the link, which a blocklist can't express in the tool's
+    /// ID/mask slots. Safe while disconnected: the adapter stores it and folds it into its init.
+    /// </summary>
+    private DeviceFilterResult ApplyDeviceFilter()
+    {
+        if (!_bus.SupportsDeviceFilter)
+            return DeviceFilterResult.Unsupported;
+        return _bus.SetDeviceFilter(CanIdFilter.Parse(_deviceFilterText, exclude: false));
+    }
+
     private void RebuildRxFilter()
     {
         if (!_filterEnabled)

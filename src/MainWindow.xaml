@@ -239,6 +239,14 @@
                       IsChecked="{Binding FilterExclude}"
                       ToolTip="Checked: hide/skip these IDs. Unchecked: show/replay only these IDs."/>
 
+            <!-- Device-level filter (OBDX): unlike the ID filter above, this drops frames in the tool. -->
+            <TextBlock Text="Device filter" VerticalAlignment="Center" Margin="0,0,6,0"
+                       IsEnabled="{Binding DeviceFilterSupported}"/>
+            <TextBox Width="170" Margin="0,0,16,0" VerticalAlignment="Center"
+                     IsEnabled="{Binding DeviceFilterSupported}"
+                     Text="{Binding DeviceFilterText}"
+                     ToolTip="OBDX only. Hex IDs/ranges the TOOL should send, e.g. 0C9 1E1 or 700-7FF — allowlist only, empty = send everything.&#10;Saves link bandwidth (matters on WiFi/BLE): non-matching frames never reach the PC, so they appear in NO trace, gauge or log.&#10;Applied on connect; edits take effect when the box loses focus."/>
+
             <Button Content="Load DBC…" Width="100" Margin="0,0,6,0" Click="OnLoadDbc"/>
             <Button Content="Clear DBC" Width="84" Margin="0,0,8,0" Click="OnClearDbc"/>
             <TextBlock Text="{Binding DbcFileName}" VerticalAlignment="Center" Foreground="#555"/>
