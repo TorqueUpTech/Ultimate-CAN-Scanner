@@ -211,6 +211,9 @@
                          Text="{Binding TcpPort}"
                          IsEnabled="{Binding IsTcpServerRunning, Converter={StaticResource InverseBool}}"
                          ToolTip="Port the RawCanWire server listens on. Run several app instances on different ports to serve multiple clients. Editable while stopped."/>
+                <ToggleButton Content="Bridge → bus" Width="92" Margin="8,0,8,0"
+                              IsChecked="{Binding BridgeToBus, Mode=TwoWay}"
+                              ToolTip="Bridge the TCP server to the live adapter: RawCanWire frames a client sends are transmitted onto the CAN bus, and frames received from the bus are broadcast to TCP clients. TCP→bus needs a connection; bus→TCP needs the server running. A frame is only relayed one way, so nothing loops."/>
                 <TextBlock Text="{Binding TcpStatus}" VerticalAlignment="Center" Foreground="#555"/>
             </WrapPanel>
         </Border>

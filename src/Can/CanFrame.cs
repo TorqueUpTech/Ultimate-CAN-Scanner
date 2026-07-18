@@ -27,9 +27,28 @@ public sealed class CanFrame
 
     public bool IsRemote { get; init; }
 
+    /// <summary>
+    /// True when this frame arrived from a TCP client (RawCanWire), not the live adapter. The
+    /// bus-bridge uses it as a loop guard: a TCP-sourced frame is transmitted onto the bus but
+    /// never re-broadcast to TCP, and a bus-sourced frame is broadcast to TCP but never re-sent.
+    /// </summary>
+    public bool FromTcp { get; init; }
+
     public byte[] Data { get; init; } = [];
 
     public int Dlc => Data.Length;
 
     public string DataHex => Convert.ToHexString(Data);
+
+    /// <summary>Copy of this frame tagged <see cref="FromTcp"/> (frames are otherwise immutable).</summary>
+    public CanFrame AsFromTcp() => new()
+    {
+        TimeStamp = TimeStamp,
+        Direction = Direction,
+        Identifier = Identifier,
+        IsExtended = IsExtended,
+        IsRemote = IsRemote,
+        FromTcp = true,
+        Data = Data
+    };
 }

@@ -62,6 +62,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private string _status = "Idle";
     private string _tcpStatus = "TCP: off";
     private int _tcpPort = TcpFrameServer.DefaultPort;
+    // Read on the adapter RX + TCP reader threads; volatile so a UI-thread toggle is seen promptly.
+    private volatile bool _bridgeToBus;
     private string _dbcFileName = "(no DBC loaded)";
     private DbcDecoder? _dbc;
     private DbcMessageInfo? _selectedDbcMessage;
@@ -399,6 +401,27 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             Status = "TCP server failed: " + ex.Message;
         }
         OnPropertyChanged(nameof(IsTcpServerRunning));
+    }
+
+    /// <summary>
+    /// When on, the TCP server and the live adapter are bridged: frames a TCP client sends in are
+    /// transmitted onto the bus, and frames received from the bus are broadcast to TCP clients. Each
+    /// relay is one-way per frame (guarded by <see cref="CanFrame.FromTcp"/>), so nothing loops.
+    /// The relay only acts when its far side is live — TCP→bus needs a connection, bus→TCP needs the
+    /// server running — so the toggle is safe to arm before either is up.
+    /// </summary>
+    public bool BridgeToBus
+    {
+        get => _bridgeToBus;
+        set
+        {
+            if (_bridgeToBus == value) return;
+            _bridgeToBus = value;
+            OnPropertyChanged();
+            Status = value
+                ? "Bus bridge on: TCP client frames transmit onto the bus; bus frames broadcast to TCP."
+                : "Bus bridge off.";
+        }
     }
 
     // ---- Log playback ----
@@ -1229,6 +1252,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void OnFrameReceived(CanFrame frame)
     {
+        // Bus bridge: relay between the live adapter and TCP clients. FromTcp is the loop guard —
+        // a TCP-sourced frame only goes out to the bus; a bus-sourced frame only goes out to TCP.
+        // Neither is relayed back the way it came, so an injected frame's self-RX echo isn't re-sent.
+        if (_bridgeToBus)
+        {
+            if (frame.FromTcp)
+            {
+                if (IsConnected)
+                    _bus.Send(frame.Identifier, frame.IsExtended, frame.Data, frame.IsRemote);
+            }
+            else if (_tcp.Running)
+            {
+                _tcp.Broadcast(RawCanWire.Encode(frame));
+            }
+        }
+
         // Log and gauge-sample every frame; the filter only trims what the grid shows.
         _logger.Log(frame);
         RecordLatest(frame);

@@ -8,8 +8,9 @@ namespace IxxatCanTool.Tcp;
 /// Serves CAN frames over TCP in the 13-byte <see cref="RawCanWire"/> format on a
 /// loopback port, so a replayed log can feed the Can-Display dash sim with no
 /// adapter (mirrors the CAN-Replay tool's server). Tracks connected clients and
-/// broadcasts each frame to all of them; the playback loop is the only writer, so
-/// broadcasts never race each other.
+/// broadcasts each frame to all of them. Broadcast writers (the playback loop and,
+/// when the bus-bridge is on, the adapter RX thread) are serialised by the client
+/// lock, so concurrent broadcasts never race.
 ///
 /// The link is bidirectional: a per-client reader re-assembles inbound 13-byte
 /// RawCanWire frames and raises <see cref="FrameReceived"/> for each, so a client
@@ -135,7 +136,7 @@ public sealed class TcpFrameServer : IDisposable
                     if (have < RawCanWire.FrameSize)
                         continue;
                     have = 0;
-                    FrameReceived?.Invoke(RawCanWire.Decode(frame));
+                    FrameReceived?.Invoke(RawCanWire.Decode(frame).AsFromTcp());
                 }
             }
         }
