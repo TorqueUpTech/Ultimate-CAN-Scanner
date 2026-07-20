@@ -21,6 +21,12 @@
     <AssemblyTitle>Ultimate CAN Scanner</AssemblyTitle>
   </PropertyGroup>
 
+  <!-- The 32-bit J2534 bridge host is a separate x86 executable with its own project; keep its
+       source (and top-level Program.cs) out of this x64 app's default compile glob. -->
+  <ItemGroup>
+    <Compile Remove="Can\J2534\Host\**\*.cs" />
+  </ItemGroup>
+
   <ItemGroup>
     <!-- HMS Networks managed VCI4 .NET API. Wraps the locally-installed
          native VCI driver (C:\Program Files\HMS\Ixxat VCI). -->
@@ -30,5 +36,25 @@
     <!-- OBDX Pro USB virtual-COM transport. -->
     <PackageReference Include="System.IO.Ports" Version="8.0.0" />
   </ItemGroup>
+
+  <!--
+    Publish the 32-bit J2534 bridge host self-contained (it bundles its own x86 .NET runtime, since
+    the x86 runtime is not assumed installed) as a single exe, into a "j2534host" subfolder beside
+    the app where J2534BridgeSession.ResolveHostPath() looks. A subfolder keeps its x86 runtime
+    apart from the app's x64 files (same DLL names, different bitness). Incremental: skipped when the
+    host exe is newer than every input. Runs on Build and Publish so dev output and the packaged
+    release both carry the host.
+  -->
+  <Target Name="StageJ2534Host" AfterTargets="Build;Publish"
+          Inputs="Can\J2534\Host\Program.cs;Can\J2534\Host\UcsJ2534Host.csproj;Can\J2534\J2534Native.cs;Can\J2534\J2534CanChannel.cs;Can\J2534\J2534BridgeProtocol.cs;Can\J2534\IJ2534Transport.cs;Can\CanFrame.cs;Tcp\RawCanWire.cs"
+          Outputs="$(OutDir)j2534host\UcsJ2534Host.exe">
+    <!-- dotnet publish (not the MSBuild task) so the win-x86 self-contained runtime pack is restored. -->
+    <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
+          Command="dotnet publish &quot;Can\J2534\Host\UcsJ2534Host.csproj&quot; -c $(Configuration) -r win-x86 --self-contained true -p:PublishSingleFile=true -o &quot;$(OutDir)j2534host&quot;" />
+    <!-- On publish of the app, also stage into the final publish dir's subfolder. -->
+    <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
+          Condition="'$(PublishDir)' != '' and '$(PublishDir)' != '$(OutDir)'"
+          Command="dotnet publish &quot;Can\J2534\Host\UcsJ2534Host.csproj&quot; -c $(Configuration) -r win-x86 --self-contained true -p:PublishSingleFile=true -o &quot;$(PublishDir)j2534host&quot;" />
+  </Target>
 
 </Project>

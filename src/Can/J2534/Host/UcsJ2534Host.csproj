@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    32-bit companion for the J2534 backend. The x64 app cannot load a 32-bit vendor PassThru DLL
+    (e.g. Tactrix OpenPort 2.0 op20pt32.dll) in-process, so this tiny x86 host loads it, runs the
+    CAN session, and relays frames to the app over its redirected stdin/stdout. It reuses the
+    exact same session/protocol source as the app (linked below) so the two ends can never drift.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Platforms>x86</Platforms>
+    <PlatformTarget>x86</PlatformTarget>
+    <RuntimeIdentifier>win-x86</RuntimeIdentifier>
+    <AssemblyName>UcsJ2534Host</AssemblyName>
+    <RootNamespace>IxxatCanTool.Can.J2534.Host</RootNamespace>
+    <!-- A console app, but keep the window hidden when the app spawns it (CreateNoWindow). -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <!-- Shared source from the main project, compiled here as x86. Single source of truth. -->
+  <ItemGroup>
+    <Compile Include="..\J2534Native.cs" Link="Shared\J2534Native.cs" />
+    <Compile Include="..\J2534CanChannel.cs" Link="Shared\J2534CanChannel.cs" />
+    <Compile Include="..\J2534BridgeProtocol.cs" Link="Shared\J2534BridgeProtocol.cs" />
+    <Compile Include="..\IJ2534Transport.cs" Link="Shared\IJ2534Transport.cs" />
+    <Compile Include="..\..\CanFrame.cs" Link="Shared\CanFrame.cs" />
+    <Compile Include="..\..\..\Tcp\RawCanWire.cs" Link="Shared\RawCanWire.cs" />
+  </ItemGroup>
+
+</Project>
