@@ -328,12 +328,23 @@
                     <CheckBox DockPanel.Dock="Top" Content="Blank gauges when stale"
                               IsChecked="{Binding ClearStaleGauges}" Margin="2,0,0,6"
                               ToolTip="When a message stops arriving (~1.5 s), clear its gauges to '—' instead of holding the last value."/>
+                    <CheckBox DockPanel.Dock="Top" Content="Only signals with data in log"
+                              IsChecked="{Binding ShowOnlyLoggedSignals}"
+                              IsEnabled="{Binding IsLogLoaded}" Margin="2,0,0,6"
+                              ToolTip="Hide CAN IDs and signals that have no data in the loaded log, so the checklist and gauges show only what the capture actually contains. Needs a log loaded."/>
                     <WrapPanel DockPanel.Dock="Bottom" Margin="2,4,0,0">
                         <Button Content="All" Width="48" Margin="0,0,4,0" Click="OnGaugeAll"/>
                         <Button Content="None" Width="48" Click="OnGaugeNone"/>
                     </WrapPanel>
                     <ListBox x:Name="CanIdList" ItemsSource="{Binding CanIdGroups}"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <!-- Hide IDs with no data in the log when "only logged signals" is on. -->
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem">
+                                <Setter Property="Visibility"
+                                        Value="{Binding IsVisible, Converter={StaticResource BoolToVis}}"/>
+                            </Style>
+                        </ListBox.ItemContainerStyle>
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <StackPanel Margin="0,2,0,3">
@@ -350,6 +361,7 @@
                                             <DataTemplate>
                                                 <CheckBox Content="{Binding SignalName}"
                                                           IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                                          Visibility="{Binding IsVisible, Converter={StaticResource BoolToVis}}"
                                                           FontSize="11" Margin="0,1,0,1"
                                                           Foreground="#555"/>
                                             </DataTemplate>

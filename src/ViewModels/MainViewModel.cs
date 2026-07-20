@@ -133,6 +133,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     // can tell when a message has stopped arriving and blank its gauges (opt-in, see ClearStaleGauges).
     private readonly ConcurrentDictionary<uint, long> _lastSeenTick = new();
     private bool _clearStaleGauges;
+    private bool _showOnlyLoggedSignals;
 
     // ---- CAN ID filter ----
     // Compiled acceptance filter, read on the RX/playback thread and swapped (never mutated)
@@ -269,6 +270,23 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         get => _clearStaleGauges;
         set => Set(ref _clearStaleGauges, value);
+    }
+
+    /// <summary>
+    /// When on and a log is loaded, the CAN-ID checklist and the gauges hide every signal (and any
+    /// ID whose signals are all absent) that has no data in the loaded log, so only signals the
+    /// capture actually contains are offered. No effect without a log loaded. Off by default.
+    /// </summary>
+    public bool ShowOnlyLoggedSignals
+    {
+        get => _showOnlyLoggedSignals;
+        set
+        {
+            if (!Set(ref _showOnlyLoggedSignals, value))
+                return;
+            ApplyLogDataFilter();
+            RebuildGauges();
+        }
     }
 
     // ---- RX ID filter ----
@@ -997,6 +1015,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             OnPropertyChanged(nameof(IsLogLoaded));
             Status = "Log load failed: " + ex.Message;
         }
+
+        // The logged-signal set changed: refresh gauge visibility (and drop any now-hidden gauges).
+        ApplyLogDataFilter();
+        RebuildGauges();
     }
 
     /// <summary>
@@ -1388,6 +1410,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             group.PropertyChanged += OnGroupEnabledChanged;
             CanIdGroups.Add(group);
         }
+
+        // Initialise log-presence/visibility for the (rebuilt) groups against any loaded log.
+        ApplyLogDataFilter();
     }
 
     private void OnGroupEnabledChanged(object? sender, PropertyChangedEventArgs e)
@@ -1396,7 +1421,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             RebuildGauges();
     }
 
-    /// <summary>Flatten the selected signals of every enabled CAN ID into the gauge list.</summary>
+    /// <summary>Flatten the selected (and, when filtering, logged) signals of every enabled CAN ID.</summary>
     private void RebuildGauges()
     {
         Gauges.Clear();
@@ -1405,9 +1430,54 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             if (!group.IsEnabled)
                 continue;
             foreach (var sig in group.Signals)
-                if (sig.IsSelected)
+                if (sig.IsSelected && sig.IsVisible)
                     Gauges.Add(sig);
         }
+    }
+
+    /// <summary>
+    /// Refresh each signal's/ID's <c>HasLogData</c> and <c>IsVisible</c> for the "only signals with
+    /// data in log" option. When the option is off or no log is loaded, everything is made visible.
+    /// </summary>
+    private void ApplyLogDataFilter()
+    {
+        bool filtering = _showOnlyLoggedSignals && _logFrames.Count > 0;
+        var logged = filtering ? ComputeLoggedSignalKeys() : null;
+
+        foreach (var group in CanIdGroups)
+        {
+            foreach (var sig in group.Signals)
+            {
+                bool has = logged is null || logged.Contains(sig.MessageName + "|" + sig.SignalName);
+                sig.HasLogData = has;
+                sig.IsVisible = !filtering || has;
+            }
+            group.IsVisible = !filtering || group.HasLogData;
+        }
+    }
+
+    /// <summary>
+    /// The set of "MessageName|SignalName" that decode to a value somewhere in the loaded log.
+    /// Reuses the already-decoded <see cref="PlotSignals"/> when present; otherwise decodes the log
+    /// once (covers a DBC loaded after the log, when PlotSignals was not built).
+    /// </summary>
+    private HashSet<string> ComputeLoggedSignalKeys()
+    {
+        var set = new HashSet<string>();
+        if (_dbc is null)
+            return set;
+
+        if (PlotSignals.Count > 0)
+        {
+            foreach (var p in PlotSignals)
+                set.Add(p.MessageName + "|" + p.SignalName);
+            return set;
+        }
+
+        foreach (var frame in _logFrames)
+            foreach (var s in _dbc.DecodeSignals(frame))
+                set.Add(s.Message + "|" + s.Signal);
+        return set;
     }
 
     /// <summary>Decode the latest frame of each enabled CAN ID and push values to its gauges.</summary>

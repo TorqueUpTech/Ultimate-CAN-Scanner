@@ -17,6 +17,8 @@ public sealed class LiveSignal : INotifyPropertyChanged
     private double _min;
     private double _max;
     private bool _isSelected = true;
+    private bool _hasLogData = true;
+    private bool _isVisible = true;
 
     public LiveSignal(string messageName, string signalName, string unit, double min, double max)
     {
@@ -53,6 +55,28 @@ public sealed class LiveSignal : INotifyPropertyChanged
 
     /// <summary>Raised only when <see cref="IsSelected"/> changes (not on value updates).</summary>
     public event Action? SelectionChanged;
+
+    /// <summary>
+    /// Whether this signal appears in the currently loaded log. Set by the view model when a log
+    /// is (re)loaded; true when there is no log to filter against. Feeds the "only signals with
+    /// data in log" gauge option through <see cref="IsVisible"/>.
+    /// </summary>
+    public bool HasLogData
+    {
+        get => _hasLogData;
+        set { if (_hasLogData != value) { _hasLogData = value; OnPropertyChanged(); } }
+    }
+
+    /// <summary>
+    /// Whether this signal is shown in the CAN-ID checklist and eligible for a gauge. The view
+    /// model lowers it for signals absent from the log when the "only logged signals" option is on;
+    /// otherwise it stays true.
+    /// </summary>
+    public bool IsVisible
+    {
+        get => _isVisible;
+        set { if (_isVisible != value) { _isVisible = value; OnPropertyChanged(); } }
+    }
 
     public bool HasValue => _value.HasValue;
 
