@@ -45,16 +45,26 @@
     host exe is newer than every input. Runs on Build and Publish so dev output and the packaged
     release both carry the host.
   -->
-  <Target Name="StageJ2534Host" AfterTargets="Build;Publish"
-          Inputs="Can\J2534\Host\Program.cs;Can\J2534\Host\UcsJ2534Host.csproj;Can\J2534\J2534Native.cs;Can\J2534\J2534CanChannel.cs;Can\J2534\J2534BridgeProtocol.cs;Can\J2534\IJ2534Transport.cs;Can\CanFrame.cs;Tcp\RawCanWire.cs"
-          Outputs="$(OutDir)j2534host\UcsJ2534Host.exe">
+  <PropertyGroup>
+    <!-- Source that the bridge host is built from; used as incremental inputs for staging below. -->
+    <J2534HostInputs>Can\J2534\Host\Program.cs;Can\J2534\Host\UcsJ2534Host.csproj;Can\J2534\J2534Native.cs;Can\J2534\J2534CanChannel.cs;Can\J2534\J2534BridgeProtocol.cs;Can\J2534\IJ2534Transport.cs;Can\CanFrame.cs;Tcp\RawCanWire.cs</J2534HostInputs>
+    <J2534HostPublishArgs>-c $(Configuration) -r win-x86 --self-contained true -p:PublishSingleFile=true</J2534HostPublishArgs>
+  </PropertyGroup>
+
+  <!-- Stage the host next to the dev build output (bin dir). Incremental on that dir. -->
+  <Target Name="StageJ2534HostBuild" AfterTargets="Build"
+          Inputs="$(J2534HostInputs)" Outputs="$(OutDir)j2534host\UcsJ2534Host.exe">
     <!-- dotnet publish (not the MSBuild task) so the win-x86 self-contained runtime pack is restored. -->
     <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
-          Command="dotnet publish &quot;Can\J2534\Host\UcsJ2534Host.csproj&quot; -c $(Configuration) -r win-x86 --self-contained true -p:PublishSingleFile=true -o &quot;$(OutDir)j2534host&quot;" />
-    <!-- On publish of the app, also stage into the final publish dir's subfolder. -->
+          Command="dotnet publish &quot;Can\J2534\Host\UcsJ2534Host.csproj&quot; $(J2534HostPublishArgs) -o &quot;$(OutDir)j2534host&quot;" />
+  </Target>
+
+  <!-- Stage the host into the app's publish output (so the release zip carries it). Keyed on the
+       PUBLISH dir so it runs even when the bin-dir copy already exists. -->
+  <Target Name="StageJ2534HostPublish" AfterTargets="Publish" Condition="'$(PublishDir)' != ''"
+          Inputs="$(J2534HostInputs)" Outputs="$(PublishDir)j2534host\UcsJ2534Host.exe">
     <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
-          Condition="'$(PublishDir)' != '' and '$(PublishDir)' != '$(OutDir)'"
-          Command="dotnet publish &quot;Can\J2534\Host\UcsJ2534Host.csproj&quot; -c $(Configuration) -r win-x86 --self-contained true -p:PublishSingleFile=true -o &quot;$(PublishDir)j2534host&quot;" />
+          Command="dotnet publish &quot;Can\J2534\Host\UcsJ2534Host.csproj&quot; $(J2534HostPublishArgs) -o &quot;$(PublishDir)j2534host&quot;" />
   </Target>
 
 </Project>
